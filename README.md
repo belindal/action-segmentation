@@ -55,6 +55,70 @@ Here are the commands to replicate key results from Table 2 in our [paper](https
 | ------ | ---- | ------- |
 | S6 | Supervised: SMM, generative |  `./run_crosstask_i3d-resnet-audio.sh pca_semimarkov_sup --classifier semimarkov --training supervised --cuda` |
 | U7 | HSMM + Narr + Ord | `./run_crosstask_i3d-resnet-audio.sh pca_semimarkov_unsup_narration_ordering --classifier semimarkov --training unsupervised --mix_tasks --task_specific_steps --sm_constrain_transitions --annotate_background_with_previous --sm_constrain_with_narration train --sm_constrain_narration_weight=-1e4 --cuda` |
+| U7 | HSMM + Narr + Ord | `./run_crosstask_i3d-resnet-audio.sh pca_semimarkov_unsup_narration_ordering --classifier semimarkov --training unsupervised --mix_tasks --task_specific_steps --sm_constrain_transitions --remove_background --sm_constrain_with_narration train --sm_constrain_narration_weight=-1e4 --cuda` |
+| U7 | HSMM + Narr | `./run_crosstask_i3d-resnet-audio.sh pca_semimarkov_unsup_narration --classifier semimarkov --training unsupervised --mix_tasks --remove_background --sm_constrain_with_narration train --sm_constrain_narration_weight=-1e4 --cuda` |
+| U7 | HSMM | `./run_crosstask_i3d-resnet-audio.sh pca_semimarkov_unsup --classifier semimarkov --training unsupervised --mix_tasks --remove_background --cuda` |
+
+
+
+## Experiments with priors
+1. Original inference (no priors)
+```bash
+env CUDA_VISIBLE_DEVICES=9 ./run_crosstask_i3d-resnet-audio.sh pca_semimarkov_sup_nobkg \
+    --classifier semimarkov \
+    --training supervised \
+    --remove_background \
+    --model_input_path expts/crosstask_i3d-resnet-audio/pca_semimarkov_sup_nobkg/ \
+    --cuda --prediction_output_path expts/crosstask_i3d-resnet-audio/pca_semimarkov_sup_nobkg/
+```
+
+2. GT priors inference
+```bash
+env CUDA_VISIBLE_DEVICES=8 ./run_crosstask_i3d-resnet-audio.sh pca_semimarkov_sup_nobkg_gtpriors \
+    --classifier semimarkov \
+    --training supervised \
+    --remove_background \
+    --model_input_path expts/crosstask_i3d-resnet-audio/pca_semimarkov_sup_nobkg/ \
+    --cuda --saved_probabilities val \
+    --prediction_output_path expts/crosstask_i3d-resnet-audio/pca_semimarkov_sup_nobkg_gtpriors
+```
+
+3. LM Priors inference
+```bash
+env CUDA_VISIBLE_DEVICES=8 ./run_crosstask_i3d-resnet-audio.sh pca_semimarkov_sup_nobkg_lmpriors \
+    --classifier semimarkov \
+    --training supervised \
+    --remove_background \
+    --model_input_path expts/crosstask_i3d-resnet-audio/pca_semimarkov_sup_nobkg/ \
+    --cuda --saved_probabilities lm_bigram \
+    --prediction_output_path expts/crosstask_i3d-resnet-audio/pca_semimarkov_sup_nobkg_lmpriors
+```
+```bash
+env CUDA_VISIBLE_DEVICES=8 ./run_crosstask_i3d-resnet-audio.sh pca_semimarkov_sup_nobkg_lmgpriors \
+    --classifier semimarkov \
+    --training supervised \
+    --remove_background \
+    --model_input_path expts/crosstask_i3d-resnet-audio/pca_semimarkov_sup_nobkg/ \
+    --cuda --saved_probabilities lm_global \
+    --prediction_output_path expts/crosstask_i3d-resnet-audio/pca_semimarkov_sup_nobkg_lmgpriors
+```
+
+```bash
+env CUDA_VISIBLE_DEVICES=8 ./run_crosstask_i3d-resnet-audio.sh pca_semimarkov_unsup_lmpriors \
+    --classifier semimarkov \
+    --training unsupervised \
+    --remove_background \
+    --mix_tasks \
+    --model_input_path expts/crosstask_i3d-resnet-audio/pca_semimarkov_unsup/ \
+    --cuda --saved_probabilities lm_bigram \
+    --prediction_output_path expts/crosstask_i3d-resnet-audio/pca_semimarkov_unsup_lmpriors
+```
+
+```
+annotate_background_with_previous
+remove_background
+```
+
 
 ## Credits
 

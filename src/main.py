@@ -16,6 +16,7 @@ from models.sequential import SequentialDiscriminative, SequentialCanonicalBasel
 from models.model import Model, add_training_args
 from models.semimarkov.semimarkov import SemiMarkovModel
 from utils.logger import logger
+import time
 
 STAT_KEYS = [
     'mof', 'mof_non_bg', 'step_recall_non_bg', 'mean_normed_levenshtein',
@@ -103,26 +104,30 @@ def add_classifier_args(parser):
     for name, cls in CLASSIFIERS.items():
         cls.add_args(parser)
 
-def write_predictions(test_data, predictions_by_video, output_path):
+def write_predictions(test_data, predictions_by_video, prediction_output_file):
     # TODO: unuglify this
     for video, pred in predictions_by_video.items():
         labels = []
+        gt_labels = []
         task = test_data._tasks_by_video[video]
-        for index in pred:
+        gt_sequence = test_data.groundtruth.gt_by_task[task][video]
+        for frame_idx in range(len(pred)):
+            index = pred[frame_idx]
+            gt_index = gt_sequence[frame_idx][0]
+            if gt_index in test_data._corpus._background_indices:
+                gt_label = "<BKG>"
+            else:
+                gt_label = test_data._corpus.index2label[gt_index].replace(' ', '_')
+            gt_labels.append(gt_label)
             if index in test_data._corpus._background_indices:
                 label = "<BKG>"
             else:
                 label = test_data._corpus.index2label[index].replace(' ', '_')
-            labels.append('{}:{}'.format(task, label))
-        with open(os.path.join(output_path, video), 'w') as f:
-            f.write('### Recognized sequence: ###\n')
-            f.write('\n') # TODO
-            f.write('### Score: ###\n')
-            f.write('\n') # TODO
-            f.write('### Frame level recognition: ###\n')
-            f.write(' '.join(labels))
+            labels.append(label)
+        prediction_output_file.write(json.dumps({"task": task, "video": video, "pred": labels, "actual": gt_labels})+"\n")
+        prediction_output_file.flush()
 
-def test(args, model: Model, test_data: Datasplit, test_data_name: str, verbose=True, prediction_output_path=None):
+def test(args, model: Model, test_data: Datasplit, test_data_name: str, verbose=True, prediction_output_file=None):
     if args.training == 'supervised':
         optimal_assignment = False
     else:
@@ -138,10 +143,9 @@ def test(args, model: Model, test_data: Datasplit, test_data_name: str, verbose=
         prediction_function = lambda video: predictions_by_video[video.name]
     else:
         prediction_function = None
-    # print('prediction_output_path: {}'.format(prediction_output_path))
-    if prediction_output_path is not None:
+    if prediction_output_file is not None:
         assert model is not None
-        write_predictions(test_data, predictions_by_video, prediction_output_path)
+        write_predictions(test_data, predictions_by_video, prediction_output_file)
     stats = test_data.accuracy_corpus(
         optimal_assignment,
         prediction_function,
@@ -428,6 +432,7 @@ if __name__ == "__main__":
     add_misc_args(parser)
     args = parser.parse_args()
 
+    print(f"Current system time: {time.time()}")
     print(' '.join(sys.argv))
 
     pprint.pprint(vars(args))
@@ -435,6 +440,12 @@ if __name__ == "__main__":
     stats_by_split_and_task = {}
 
     stats_by_split_by_task = {}
+
+    # transition_probs_wf = open("empirical_transition_probs.jsonl", "w")
+
+    prediction_output_file = None
+    if args.prediction_output_path is not None:
+        prediction_output_file = open(os.path.join(args.prediction_output_path, "preds.jsonl"), 'w')
 
     for split_name, (train_data, train_sub_data, test_data) in make_data_splits(args).items():
         print(split_name)
@@ -459,6 +470,7 @@ if __name__ == "__main__":
 
                     print("setting model args to serialized args")
                 model.args = args
+                model.model.args = args
                 try:
                     model.model.eval()
                     if args.cuda:
@@ -471,11 +483,24 @@ if __name__ == "__main__":
             else:
                 model = train(args, train_data, test_data, split_name, train_sub_data=train_sub_data)
 
+        """
+        task_indices = test_data._corpus.indices_by_task(int(split_name.replace("_val", "")))
+        # for label_index in task_indices: print(test_data._corpus.index2label[label_index])
+        # print(model.model.transition_logits)
+        # print(model.model.transition_log_probs(np.array(task_indices)).tolist())
+        transition_probs_wf.write(json.dumps({
+            "task_num": int(split_name.replace("_val", "")),
+            "actions": [test_data._corpus.index2label[label_index] for label_index in task_indices],
+            "task_probs": model.model.transition_log_probs(np.array(task_indices)).tolist(),
+        })+"\n")
+        # continue
+        # """
+
         print('split_name: {}'.format(split_name))
         # prediction_output_path = args.prediction_output_path if 'val' in split_name else None
-        prediction_output_path = args.prediction_output_path
+        # prediction_output_path = 
 
-        stats_by_task = test(args, model, test_data, split_name, prediction_output_path=prediction_output_path)
+        stats_by_task = test(args, model, test_data, split_name, prediction_output_file=prediction_output_file)
         stats_by_split_by_task[split_name] = {}
         for task, stats in stats_by_task.items():
             stats_by_split_and_task["{}_{}".format(split_name, task)] = stats
@@ -535,3 +560,4 @@ if __name__ == "__main__":
         compare_keys = ['comparison_{}'.format(key) for key in DISPLAY_STAT_KEYS]
         print(', '.join(compare_keys))
         print(', '.join('{:.4f}'.format(stat_dict[key]) for key in compare_keys))
+    print(f"Current system time: {time.time()}")

@@ -48,6 +48,20 @@ class ResidualLayer(nn.Module):
     def forward(self, x):
         return F.relu(self.lin2(F.relu(self.lin1(x)))) + x
 
+saved_probs = {
+    "transition": {
+        "train": np.load("saved_probabilities/transition/train.pkl.npy", allow_pickle=True).item(),
+        "val": np.load("saved_probabilities/transition/val.pkl.npy", allow_pickle=True).item(),
+        "lm_bigram": np.load("saved_probabilities/transition/lm_bigrams.pkl.npy", allow_pickle=True).item(),
+        "lm_global": np.load("saved_probabilities/transition/lm_globals.pkl.npy", allow_pickle=True).item(),
+    },
+    "init": {
+        # "train": np.load("saved_probabilities/init/train.pkl.npy", allow_pickle=True).item(),
+        "val": np.load("saved_probabilities/init/val.pkl.npy", allow_pickle=True).item(),
+        "lm_bigram": np.load("saved_probabilities/init/lm_bigrams.pkl.npy", allow_pickle=True).item(),
+        "lm_global": np.load("saved_probabilities/init/lm_globals.pkl.npy", allow_pickle=True).item(),
+    }
+}
 
 class SemiMarkovModule(nn.Module):
     @classmethod
@@ -62,6 +76,9 @@ class SemiMarkovModule(nn.Module):
         # parser.add_argument('--sm_projection_dim', type=int)
         parser.add_argument('--sm_feature_projection', action='store_true', help='use a flow')
         parser.add_argument('--sm_init_non_projection_parameters_from')
+        parser.add_argument('--saved_probabilities', type=str,
+                            choices=[None, "train", "val", "lm_bigram", "lm_global"],
+                            default=None, help='what probabilites to use for transitions')
         NICETrans.add_args(parser)
 
     def __init__(self, args, n_classes, n_dims,
@@ -320,6 +337,41 @@ class SemiMarkovModule(nn.Module):
         # transition_logits are indexed: to_state, from_state
         # so each column should be normalized (in log-space)
         return F.log_softmax(masked, dim=0)
+    
+    def transition_log_probs_from_file(self, valid_classes, corpus_index2label, task, probs):
+        empirical_logprobs = self.transition_log_probs(valid_classes)
+        # nonbkg_class_idxs = (valid_classes != 0).nonzero(as_tuple=False).squeeze()
+        # class_to_nonbkg_logprob = empirical_logprobs[nonbkg_class_idxs][:,nonbkg_class_idxs]
+        # class_to_total_nonbkg_prob = class_to_nonbkg_logprob.exp().sum(0)
+        nonself_class_mask = ~(torch.eye(empirical_logprobs.shape[0]).bool())
+        class_to_nonself_logprob = empirical_logprobs.t()[nonself_class_mask].view(empirical_logprobs.shape[0], empirical_logprobs.shape[0]-1).t()
+        class_to_total_nonself_prob = class_to_nonself_logprob.exp().sum(0)
+        # if task == 105253: import pdb; pdb.set_trace()
+        # non-self-transitions
+        if (probs[task] != probs[task]).any():
+            # haven't seen anything after this action in this task before... uniform prior...
+            assert (((probs[task] != probs[task]).sum(0) == 0) | ((probs[task] != probs[task]).sum(0) == probs[task].shape[0])).all()
+            probs[task][probs[task] != probs[task]] = 1. / probs[task].shape[1]
+        # recalibrate all other non-background logits
+        new_logprobs = (torch.tensor(probs[task]).to(
+            class_to_total_nonself_prob.device, class_to_total_nonself_prob.dtype
+        ) * class_to_total_nonself_prob).log()
+        # nonbkg_class_mask = (valid_classes != 0) & (valid_classes != 0).unsqueeze(-1)
+        empirical_logprobs[nonself_class_mask] = new_logprobs[nonself_class_mask]
+        return empirical_logprobs
+
+    def initial_log_probs_from_file(self, valid_classes, corpus_index2label, task, probs):
+        empirical_logprobs = self.initial_log_probs(valid_classes)
+        # nonbkg_class_idxs = (valid_classes != 0).nonzero(as_tuple=False).squeeze()
+        nonbkg_class_mask = valid_classes != 0
+        class_to_nonbkg_logprob = empirical_logprobs[nonbkg_class_mask]
+        class_to_total_nonbkg_prob = class_to_nonbkg_logprob.exp().sum(0)
+        # recalibrate all other non-background logits
+        new_logprobs = (torch.tensor(probs[task]).to(
+            class_to_total_nonbkg_prob.device, class_to_total_nonbkg_prob.dtype
+        ) * class_to_total_nonbkg_prob).log()
+        empirical_logprobs[nonbkg_class_mask] = new_logprobs
+        return empirical_logprobs
 
     def _emission_log_probs_with_means(self, features, class_means):
         # num_classes, d_ = class_means.size()
@@ -552,7 +604,7 @@ class SemiMarkovModule(nn.Module):
 
     def score_features(self, features, lengths, valid_classes, add_eos, use_mean_z,
                        additional_allowed_ends_per_instance=None,
-                       constraints=None, return_elp=False):
+                       constraints=None, return_elp=False, corpus_index2label=None, task=None):
         # assert all_equal(lengths), "varied length scoring isn't implemented"
         # TODO: make this functional
         self.set_z(features, lengths, use_mean=use_mean_z)
@@ -579,8 +631,13 @@ class SemiMarkovModule(nn.Module):
         elp = self.emission_log_probs(projected_features, valid_classes, constraints)
 
         scores = self.log_hsmm(
-            self.transition_log_probs(valid_classes),
+            self.transition_log_probs_from_file(
+                valid_classes, corpus_index2label, task, saved_probs["transition"][self.args.saved_probabilities],
+            ) if self.args.saved_probabilities is not None else self.transition_log_probs(valid_classes),
             elp,
+            # self.initial_log_probs_from_file(
+            #     valid_classes, corpus_index2label, task, saved_probs["init"][self.args.saved_probabilities],
+            # ) if self.args.saved_probabilities is not None else 
             self.initial_log_probs(valid_classes),
             self.length_log_probs(valid_classes),
             lengths,
@@ -658,7 +715,8 @@ class SemiMarkovModule(nn.Module):
         return log_likelihood, log_det.mean()
 
     def viterbi(self, features, lengths, valid_classes_per_instance, add_eos=True, use_mean_z=False,
-                additional_allowed_ends_per_instance=None, constraints=None, predict_single=False, return_elp=False):
+                additional_allowed_ends_per_instance=None, constraints=None, predict_single=False, return_elp=False,
+                corpus_index2label=None, task=None):
         if valid_classes_per_instance is not None:
             assert all_equal(set(vc.detach().cpu().numpy()) for vc in
                              valid_classes_per_instance), "must have same valid_classes for all instances in the batch"
@@ -669,7 +727,7 @@ class SemiMarkovModule(nn.Module):
             C = self.n_classes
         scores, log_det, elp = self.score_features(features, lengths, valid_classes, add_eos=add_eos, use_mean_z=use_mean_z,
                                      additional_allowed_ends_per_instance=additional_allowed_ends_per_instance,
-                                     constraints=constraints, return_elp=True)
+                                     constraints=constraints, return_elp=True, corpus_index2label=corpus_index2label, task=task)
         if add_eos:
             eos_lengths = lengths + 1
         else:

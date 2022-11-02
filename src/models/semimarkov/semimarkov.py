@@ -320,6 +320,7 @@ class SemiMarkovModel(Model):
         self.model.flatten_parameters()
         predictions = {}
         loader = make_data_loader(self.args, test_data, shuffle=False, batch_by_task=True, batch_size=self.args.batch_size)
+        # test_data.corpus.index2label
         # print('{} videos in prediction data'.format(len(loader.dataset)))
         # for batch in tqdm.tqdm(loader, ncols=80):
         for batch in loader:
@@ -359,7 +360,7 @@ class SemiMarkovModel(Model):
                 # TODO: figure out under which eval conditions use_mean_z should be False
                 pred_spans, elp = self.model.viterbi(features, lengths, task_indices, add_eos=True, use_mean_z=True,
                                                 additional_allowed_ends_per_instance=addl_allowed_ends,
-                                                constraints=constraints, return_elp=True)
+                                                constraints=constraints, return_elp=True, corpus_index2label=test_data._corpus.index2label, task=task)
                 pred_labels = semimarkov_utils.spans_to_labels(pred_spans)
                 # if self.args.sm_predict_single:
                 #     # pred_spans: batch_size x T

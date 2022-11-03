@@ -9,7 +9,7 @@ task_num_to_desc = {23521: 'Make Jello Shots', 59684: 'Build Simple Floating She
 orig_fn = "expts/crosstask_i3d-resnet-audio/pca_semimarkov_unsup/preds.jsonl"
 gtpr_fn = "expts/crosstask_i3d-resnet-audio/pca_semimarkov_unsup_gtpriors/preds.jsonl"
 lmpr_fn = "expts/crosstask_i3d-resnet-audio/pca_semimarkov_unsup_lmpriors/preds.jsonl"
-# lmgpr_fn = "expts/crosstask_i3d-resnet-audio/pca_semimarkov_unsup_lmgpriors/preds.jsonl"
+lmpr_fn = "expts/crosstask_i3d-resnet-audio/pca_semimarkov_unsup_lmgpriors/preds.jsonl"
 
 # average over tasks
 def get_intersection(fn):

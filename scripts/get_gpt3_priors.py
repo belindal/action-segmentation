@@ -11,10 +11,11 @@ import random
 import math
 import matplotlib.pyplot as plt
 import time
+from scipy.special import kl_div
 
 
-openai.api_key = os.getenv("OPENAI_API_KEY_JDA")
-engine = "code-davinci-002"
+openai.api_key = os.getenv("OPENAI_API_KEY_MIT")
+engine = "text-davinci-002"
 gpt3_file = f"gpt3/cache_{engine}.jsonl"
 
 
@@ -143,20 +144,20 @@ The first step is melt button skillet: implausible.
 The step after place bread in skillet is remove toast from pan: plausible.
 """
 
-bigram_gpt3_input_demos = """Your task is to make gummy bears. Your set of actions is: {add gelatin, add flavoring, pour water in saucepan, pour juice, pour mixture into cup, add pureed berries, stir mixture}
+bigram_gpt3_input_demos = """Your task is to make gummy bears. Your set of actions is: {add gelatin, add flavoring, pour water in saucepan, pour juice, pour mixture into cup, add pureed berries, stir mixture}. These actions may be out of order and your job is to order them.
 The first step is pour water in saucepan
 The step after add pureed berries is stir mixture
 The step after add gelatin is add flavoring
 The step after pour water in saucepan is add gelatin
 The step after stir mixture is pour mixture into cup
 
-Your task is to build a desk. Your set of actions is: {screw desk, paint wood, sand wood, cut wood}
+Your task is to build a desk. Your set of actions is: {screw desk, paint wood, sand wood, cut wood}. These actions may be out of order and your job is to order them.
 The step after sand wood is paint wood
 The first step is cut wood
 The step after cut wood is sand wood
 The step after paint wood is screw desk
 
-Your task is to make vegan french toast. Your set of actions is: {remove toast from pan, mix vanilla, dip bread into milk mixture, melt butter on skillet, mix egg replacer, mix maple syrup, mix milk, place bread in skillet, heat skillet}
+Your task is to make vegan french toast. Your set of actions is: {remove toast from pan, mix vanilla, dip bread into milk mixture, melt butter on skillet, mix egg replacer, mix maple syrup, mix milk, place bread in skillet, heat skillet}. These actions may be out of order and your job is to order them.
 The step after heat skillet is melt butter on skillet
 The step after dip bread into milk mixture is place bread in skillet
 The first step is heat skillet
@@ -201,17 +202,17 @@ with open("empirical_transition_probs.jsonl") as f:
         gpt3_scores, _ = gpt3_score_prompt(
             engine=engine,
             # input_prefix=f"{gpt3_input_demos}Your task is to {task.lower()}. Your actions are: {', '.join(non_bkg_actions_prompt)}.\n\nThe first step is ",
-            input_prefix=f"{bigram_gpt3_input_demos}Your task is to {task.lower()}. Your set of actions is: {{{', '.join(non_bkg_actions_prompt)}}}\n\nThe first step is ",
+            input_prefix=f"{bigram_gpt3_input_demos}Your task is to {task.lower()}. Your set of actions is: {{{', '.join(non_bkg_actions_prompt)}}}. These actions may be out of order and your job is to order them.\nThe first step is ",
             classes=non_bkg_actions,
             cache=cache,
         )
         lm_init_probs[line["task_num"]] = F.softmax(torch.tensor(gpt3_scores), dim=0)
         lm_bigram_transition_probs[line["task_num"]] = []
-        for action in tqdm(non_bkg_actions):
+        for action in tqdm(non_bkg_actions, desc="bigram"):
             # for next_action in non_bkg_actions:
             gpt3_scores, _ = gpt3_score_prompt(
                 engine=engine,
-                input_prefix=f"{bigram_gpt3_input_demos}Your task is to {task.lower()}. Your set of actions is: {{{', '.join(non_bkg_actions_prompt)}}}\n\nThe step after {action} is ",
+                input_prefix=f"{bigram_gpt3_input_demos}Your task is to {task.lower()}. Your set of actions is: {{{', '.join(non_bkg_actions_prompt)}}}. These actions may be out of order and your job is to order them.\nThe step after {action} is ",
                 classes=non_bkg_actions,
                 cache=cache,
             )
@@ -219,30 +220,9 @@ with open("empirical_transition_probs.jsonl") as f:
         lm_bigram_transition_probs[line["task_num"]] = torch.stack(lm_bigram_transition_probs[line["task_num"]], dim=-1)
 
         # global probs
-        non_bkg_actions_prompt = sorted(non_bkg_actions)
-        # if task == "Add Oil to Your Car":
-        gpt3_scores, _ = gpt3_score_prompt(
-            engine=engine,
-            # input_prefix=f"{gpt3_input_demos}Your task is to {task.lower()}. Your actions are: {', '.join(non_bkg_actions_prompt)}.\n\nThe first step is ",
-            input_prefix=f"{bigram_gpt3_input_demos}Your task is to {task.lower()}. Your set of actions is: {{{', '.join(non_bkg_actions_prompt)}}}\nThe first step is ",
-            classes=non_bkg_actions,
-            cache=cache,
-        )
-        lm_bigram_transition_probs[line["task_num"]] = []
-        for action in tqdm(non_bkg_actions):
-            # for next_action in non_bkg_actions:
-            gpt3_scores, _ = gpt3_score_prompt(
-                engine=engine,
-                input_prefix=f"{bigram_gpt3_input_demos}Your task is to {task.lower()}. Your set of actions is: {{{', '.join(non_bkg_actions_prompt)}}}\nThe step after {action} is ",
-                classes=non_bkg_actions,
-                cache=cache,
-            )
-            lm_bigram_transition_probs[line["task_num"]].append(F.softmax(torch.tensor(gpt3_scores), dim=0))
-        lm_bigram_transition_probs[line["task_num"]] = torch.stack(lm_bigram_transition_probs[line["task_num"]], dim=-1)
-
         lm_global_transition_probs[line["task_num"]] = []
         curr_prompt = f"{global_gpt3_input_demos}Your task is to {task.lower()}. Your set of actions is: {{{', '.join(non_bkg_actions_prompt)}}}\nThe correct ordering is: "
-        for action_idx, action in enumerate(tqdm(non_bkg_actions)):
+        for action_idx, action in enumerate(tqdm(non_bkg_actions, desc="global")):
             # for next_action in non_bkg_actions:
             gpt3_scores, _ = gpt3_score_prompt(
                 engine=engine,
@@ -296,6 +276,7 @@ np.save(lm_global_init_probs_fn, lm_global_init_probs, allow_pickle=True)
 np.save(lm_bigram_transition_probs_fn, lm_bigram_transition_probs, allow_pickle=True)
 np.save(lm_global_transition_probs_fn, lm_global_transition_probs, allow_pickle=True)
 
+kl_divs_lm_val = {}
 def graph_probs(task_transition_probs, task_init_probs, task_labels):
     all_types = list(task_transition_probs.keys())
     for j, task in enumerate(tqdm(task_transition_probs[all_types[1]], desc="Making graphs")):
@@ -328,6 +309,10 @@ def graph_probs(task_transition_probs, task_init_probs, task_labels):
         fig.tight_layout()
         os.makedirs(f"saved_probabilities/plots", exist_ok=True)
         fig.savefig(f"saved_probabilities/plots/{task_num_to_desc[task]}.png")
+        kl_divs_lm_val[task_num_to_desc[task]] = kl_div(task_init_probs["val"][task], task_init_probs["lm_bigram"][task])
+    print("KL Divs")
+    print(kl_divs_lm_val)
+    print(sum(kl_divs_lm_val.values()) / len(kl_divs_lm_val))
     # for task in task_transition_probs:
 
 # empirical_val_transition_probs["init"] = empirical_val_init_probs

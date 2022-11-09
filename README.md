@@ -60,6 +60,17 @@ Here are the commands to replicate key results from Table 2 in our [paper](https
 | U7 | HSMM | `./run_crosstask_i3d-resnet-audio.sh pca_semimarkov_unsup --classifier semimarkov --training unsupervised --mix_tasks --remove_background --cuda` |
 
 
+## Training with priors (Unsupervised)
+```bash
+env CUDA_VISIBLE_DEVICES=8 ./run_crosstask_i3d-resnet-audio.sh pca_semimarkov_unsup_init_codex_bigram \
+    --classifier semimarkov --training unsupervised --mix_tasks --remove_background --cuda \
+    --saved_probabilities codex_bigram
+```
+
+## Training on subset
+```bash
+env CUDA_VISIBLE_DEVICES=8 ./run_crosstask_i3d-resnet-audio.sh pca_semimarkov_sup --classifier semimarkov --training supervised --cuda --train_subset [train_heldout_step|train_heldout_transition]
+```
 
 ## Experiments with priors
 1. Original inference (no priors)
@@ -84,25 +95,18 @@ env CUDA_VISIBLE_DEVICES=8 ./run_crosstask_i3d-resnet-audio.sh pca_semimarkov_su
 ```
 
 3. LM Priors inference
+* Supervised
 ```bash
-env CUDA_VISIBLE_DEVICES=8 ./run_crosstask_i3d-resnet-audio.sh pca_semimarkov_sup_nobkg_lmpriors \
+env CUDA_VISIBLE_DEVICES=8 ./run_crosstask_i3d-resnet-audio.sh pca_semimarkov_sup_nobkg_lmpriors_codex \
     --classifier semimarkov \
     --training supervised \
     --remove_background \
     --model_input_path expts/crosstask_i3d-resnet-audio/pca_semimarkov_sup_nobkg/ \
-    --cuda --saved_probabilities lm_bigram \
-    --prediction_output_path expts/crosstask_i3d-resnet-audio/pca_semimarkov_sup_nobkg_lmpriors
-```
-```bash
-env CUDA_VISIBLE_DEVICES=8 ./run_crosstask_i3d-resnet-audio.sh pca_semimarkov_sup_nobkg_lmgpriors \
-    --classifier semimarkov \
-    --training supervised \
-    --remove_background \
-    --model_input_path expts/crosstask_i3d-resnet-audio/pca_semimarkov_sup_nobkg/ \
-    --cuda --saved_probabilities lm_global \
-    --prediction_output_path expts/crosstask_i3d-resnet-audio/pca_semimarkov_sup_nobkg_lmgpriors
+    --cuda --saved_probabilities codex_bigram \
+    --prediction_output_path expts/crosstask_i3d-resnet-audio/pca_semimarkov_sup_nobkg_lmpriors_codex
 ```
 
+* Unsupervised
 ```bash
 env CUDA_VISIBLE_DEVICES=8 ./run_crosstask_i3d-resnet-audio.sh pca_semimarkov_unsup_lmpriors \
     --classifier semimarkov \
@@ -112,6 +116,18 @@ env CUDA_VISIBLE_DEVICES=8 ./run_crosstask_i3d-resnet-audio.sh pca_semimarkov_un
     --model_input_path expts/crosstask_i3d-resnet-audio/pca_semimarkov_unsup/ \
     --cuda --saved_probabilities lm_bigram \
     --prediction_output_path expts/crosstask_i3d-resnet-audio/pca_semimarkov_unsup_lmpriors
+```
+
+4. Full context with LM Priors
+```bash
+env CUDA_VISIBLE_DEVICES=8 ./run_crosstask_i3d-resnet-audio.sh pca_semimarkov_sup_lmpriors_fullctxt \
+    --classifier semimarkov \
+    --training supervised \
+    --remove_background \
+    --model_input_path expts/crosstask_i3d-resnet-audio/pca_semimarkov_sup_nobkg/ \
+    --cuda \
+    --use_full_ctxt_greedy_decode \
+    --prediction_output_path expts/crosstask_i3d-resnet-audio/pca_semimarkov_sup_lmpriors_fullctxt
 ```
 
 ```

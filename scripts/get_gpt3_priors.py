@@ -18,6 +18,7 @@ from scripts.gpt3_utils import load_gpt3_cache, save_gpt3_result, gpt3_score_pro
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--model_type", type=str, choices=["text", "code", "random"], default="text", help="which GPT3 model to use")
+parser.add_argument("--hmm_model_fn", type=str, default="expts/crosstask_i3d-resnet-audio/pca_semimarkov_sup_heldout_transition_lmpriors", help="which HMM model to use")
 args = parser.parse_args()
 
 model_type = args.model_type
@@ -51,6 +52,7 @@ lm_init_probs = {}
 lm_bigram_transition_probs = {}
 lm_global_init_probs = {}
 lm_global_transition_probs = {}
+empirical_init_probs = {}
 empirical_transition_probs = {}
 
 lm_init_probs_fn = f"saved_probabilities/init/lm_bigrams_{args.model_type}.pkl.npy"
@@ -68,7 +70,7 @@ if os.path.exists(lm_global_transition_probs_fn):
 
 
 
-with open("empirical_transition_probs.jsonl") as f:
+with open(f"{args.hmm_model_fn}/train_init_transition_probs.jsonl") as f:
     all_lines = f.readlines()
     for line in tqdm(all_lines):
         line = json.loads(line)
@@ -81,11 +83,14 @@ with open("empirical_transition_probs.jsonl") as f:
         except:
             import pdb; pdb.set_trace()
         non_bkg_actions_idxs = [i for i,a in enumerate(actions) if a != "BKG"]
-        trans_logp = np.array(line["task_probs"])
-        trans_p = np.exp(trans_logp)
+        trans_p = np.exp(np.array(line["transition_probs"]))
+        init_p = np.exp(np.array(line["init_probs"]))
         nonbkg_trans_p = trans_p[np.array(non_bkg_actions_idxs)][:,np.array(non_bkg_actions_idxs)]
-        renormalized_p = (nonbkg_trans_p / nonbkg_trans_p.sum(0))
-        empirical_transition_probs[line["task_num"]] = renormalized_p
+        nonbkg_init_p = init_p[np.array(non_bkg_actions_idxs)]
+        renormalized_trans_p = (nonbkg_trans_p / nonbkg_trans_p.sum(0))
+        renormalized_init_p = (nonbkg_init_p / nonbkg_init_p.sum())
+        empirical_transition_probs[line["task_num"]] = renormalized_trans_p
+        empirical_init_probs[line["task_num"]] = renormalized_init_p
 
         # if not os.path.exists(lm_bigram_transition_probs_fn):
         non_bkg_actions_prompt = sorted(non_bkg_actions)
@@ -170,24 +175,32 @@ np.save(lm_global_init_probs_fn, lm_global_init_probs, allow_pickle=True)
 np.save(lm_bigram_transition_probs_fn, lm_bigram_transition_probs, allow_pickle=True)
 np.save(lm_global_transition_probs_fn, lm_global_transition_probs, allow_pickle=True)
 
-kl_divs_lm_val = {}
 def graph_probs(task_transition_probs, task_init_probs, task_labels):
     all_types = list(task_transition_probs.keys())
+    os.makedirs(f"saved_probabilities/hm/", exist_ok=True)
     for j, task in enumerate(tqdm(task_transition_probs[all_types[1]], desc="Making graphs")):
         max_num_plots = max([len(task_transition_probs[type][task]) for type in task_transition_probs if task in task_transition_probs[type]]) + 1
         
-        for type in all_types:
-            fig, ax = plt.subplots()#figsize=(15,6))
+        # heatmap
+        fig, ax = plt.subplots(2,2)#figsize=(15,6))
+        for t, type in enumerate(all_types):
+            # fig, ax = plt.subplots()#figsize=(15,6))
             # import pdb; pdb.set_trace()
             # visualize and save
-            differences = np.absolute(task_transition_probs[type][task] - np.transpose(task_transition_probs[type][task]))
-            ax = sns.heatmap(differences, ax=ax) #, annot=True, fmt="d")
+            differences = np.transpose(task_transition_probs[type][task])
+            # differences = np.absolute(task_transition_probs[type][task] - np.transpose(task_transition_probs[type][task]))
+            ax[t//2,t%2] = sns.heatmap(differences, ax=ax[t//2,t%2]) #, annot=True, fmt="d")
+            ax[t//2,t%2].set_title(type)
             # fig = ax.get_figure()
-            plt.xticks(np.arange(len(task_labels[task]))+0.5, task_labels[task], fontsize=9, rotation=90)
-            plt.yticks(np.arange(len(task_labels[task]))+0.5, task_labels[task], fontsize=9, rotation=0)
-            fig.tight_layout()
-            os.makedirs(f"saved_probabilities/plots_{args.model_type}/hm", exist_ok=True)
-            fig.savefig(f"saved_probabilities/plots_{args.model_type}/hm/{task_num_to_desc[task]}.png")
+            if t//2 == 1:
+                ax[t//2,t%2].set_xticks(np.arange(len(task_labels[task]))+0.5)
+                ax[t//2,t%2].set_xticklabels(task_labels[task], fontdict={'fontsize': 9, 'rotation': 90})
+            if t%2 == 0:
+                ax[t//2,t%2].set_yticks(np.arange(len(task_labels[task]))+0.5)
+                ax[t//2,t%2].set_yticklabels(task_labels[task], fontdict={'fontsize': 9, 'rotation': 0})
+        fig.tight_layout()
+        fig.suptitle(task_num_to_desc[task])
+        fig.savefig(f"saved_probabilities/hm/{task_num_to_desc[task]}.png")
 
         fig, axs = plt.subplots(
             max_num_plots,
@@ -217,16 +230,26 @@ def graph_probs(task_transition_probs, task_init_probs, task_labels):
         fig.tight_layout()
         os.makedirs(f"saved_probabilities/plots_{args.model_type}", exist_ok=True)
         fig.savefig(f"saved_probabilities/plots_{args.model_type}/{task_num_to_desc[task]}.png")
-        kl_divs_lm_val[task_num_to_desc[task]] = []
-        kl_divs_lm_val[task_num_to_desc[task]].append(kl_div(task_init_probs["val"][task], task_init_probs["lm_bigram"][task]).sum())
-        for i in range(len(task_transition_probs["val"][task])):
-            if (task_transition_probs["val"][task][:,i] != task_transition_probs["val"][task][:,i]).any(): continue
-            kl_divs_lm_val[task_num_to_desc[task]].append(kl_div(task_transition_probs["val"][task][:,i], task_transition_probs["lm_bigram"][task][:,i]).sum())
-        kl_divs_lm_val[task_num_to_desc[task]] = torch.tensor(kl_divs_lm_val[task_num_to_desc[task]]).mean().item()
-    print("KL Divs")
-    print(kl_divs_lm_val)
-    print(sum(kl_divs_lm_val.values()) / len(kl_divs_lm_val))
-    # for task in task_transition_probs:
+
+def get_kl_divs(task_transition_probs, task_init_probs, compare_pairs):
+    # compare_pairs: [(P,Q), (P,Q)]
+    # compute KL(P||Q)
+    kl_divs_lm_val = {}
+    all_types = list(task_transition_probs.keys())
+    for pair in compare_pairs:
+        kl_divs_lm_val[pair] = {}
+        print(pair)
+        for j, task in enumerate(tqdm(task_transition_probs[all_types[1]], desc="Computing KL divs")):
+            kl_divs_lm_val[pair][task_num_to_desc[task]] = []
+            kl_divs_lm_val[pair][task_num_to_desc[task]].append(kl_div(task_init_probs[pair[0]][task], task_init_probs[pair[1]][task]).sum())
+            for i in range(len(task_transition_probs[pair[0]][task])):
+                if (task_transition_probs[pair[0]][task][:,i] != task_transition_probs[pair[0]][task][:,i]).any(): continue
+                kl_divs_lm_val[pair][task_num_to_desc[task]].append(kl_div(task_transition_probs[pair[0]][task][:,i], task_transition_probs[pair[1]][task][:,i]).sum())
+            kl_divs_lm_val[pair][task_num_to_desc[task]] = torch.tensor(kl_divs_lm_val[pair][task_num_to_desc[task]]).mean().item()
+        print(kl_divs_lm_val[pair])
+        print(sum(kl_divs_lm_val[pair].values()) / len(kl_divs_lm_val[pair]))
+        # for task in task_transition_probs:
+    return kl_divs_lm_val
 
 def merge_probs(probs_dict, task_num_to_step_model_order):
     """
@@ -271,8 +294,7 @@ def merge_probs(probs_dict, task_num_to_step_model_order):
 
 # empirical_val_transition_probs["init"] = empirical_val_init_probs
 # lm_bigram_transition_probs["init"] = lm_init_probs
-graph_probs(
-    {"train": empirical_transition_probs, "val": empirical_val_transition_probs, "lm_bigram": lm_bigram_transition_probs, "lm_global": lm_global_transition_probs},
-    {"val": empirical_val_init_probs, "lm_bigram": lm_init_probs, "lm_global": lm_global_init_probs},
-    task_num_to_step_model_order
-)
+task_transition_probs = {"train": empirical_transition_probs, "val": empirical_val_transition_probs, "lm_bigram": lm_bigram_transition_probs, "lm_global": lm_global_transition_probs}
+task_init_probs = {"train": empirical_init_probs, "val": empirical_val_init_probs, "lm_bigram": lm_init_probs, "lm_global": lm_global_init_probs}
+get_kl_divs(task_transition_probs, task_init_probs, [("val", "train"), ("val", "lm_bigram")])
+graph_probs(task_transition_probs, task_init_probs, task_num_to_step_model_order)

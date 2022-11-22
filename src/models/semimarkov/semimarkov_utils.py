@@ -1,7 +1,13 @@
 import numpy as np
 import torch
 from sklearn.mixture import GaussianMixture
+from scripts.gpt3_utils import gpt3_score_prompt, load_gpt3_cache, global_gpt3_input_demos, task_num_to_desc
 
+# model_type = args.model_type
+model_type = "code"
+engine = f"{model_type}-davinci-002"
+gpt3_file = f"gpt3/cache_{engine}.jsonl"
+gpt3_cache = load_gpt3_cache(gpt3_file)
 
 def labels_to_spans(position_labels, max_k):
     # position_labels: b x N, LongTensor
@@ -112,6 +118,7 @@ def semimarkov_sufficient_stats(feature_list, label_list, covariance_type, n_cla
 
     X_arr = np.vstack(X_l)
     r_arr = np.vstack(r_l)
+    # import pdb; pdb.set_trace()
     emissions._initialize(X_arr, r_arr)
     if tied_diag:
         cov, prec_chol = get_diagonal_covariances(X_arr)
@@ -124,3 +131,48 @@ def semimarkov_sufficient_stats(feature_list, label_list, covariance_type, n_cla
         'span_transition_counts': span_transition_counts,
         'instance_count': instance_count,
     }
+
+
+def make_steps_lm_prefix(actions_list):
+    steps_nl = []
+    for i, action in enumerate(actions_list):
+        steps_nl.append(f"{i}. {action}")
+    return ", ".join(steps_nl) + f"{len(actions_list)}. "
+
+
+def greedy_lm_search(scores, task, lengths, add_eos, valid_classes_mapping, corpus_index2label):
+    bs = len(lengths)
+    pred_spans = -torch.ones([bs, max(lengths)], device=scores['emission'].device, dtype=torch.long)
+    actions_uniq_history = [[] for _ in lengths]
+    curr_action_lens = torch.zeros(bs, device=scores['emission'].device, dtype=torch.long)
+    valid_classes = [valid_class for valid_class in list(valid_classes_mapping.keys()) if valid_classes_mapping[valid_class] not in [-1, 106]]
+    non_bkg_actions_prompt = [corpus_index2label[valid_classes_mapping[valid_class]] for valid_class in valid_classes]
+    # [[] for _ in lengths]
+    for i in range(max(lengths)):
+        next_action_logprob = torch.zeros([bs, len(valid_classes)], device=scores['emission'].device)
+        # emission probabilities
+        next_action_logprob += scores['emission'][:,i]
+
+        # lm probabilities
+        next_action_logprob_lm = []
+        for b in range(len(lengths)):
+            steps_until_now = make_steps_lm_prefix(actions_uniq_history[b])
+            curr_prompt = f"{global_gpt3_input_demos}Your task is to {task_num_to_desc[task].lower()}. Your set of actions is: {{{', '.join(non_bkg_actions_prompt)}}}\nThe steps are: {steps_until_now}"
+            # LM probabilities
+            # TODO exclude last action??? (or include LM probability...)
+            next_action_logprob_lm.append(gpt3_score_prompt(
+                engine=engine,
+                input_prefix=curr_prompt,
+                classes=non_bkg_actions_prompt,
+                cache=gpt3_cache,
+                gpt3_file=gpt3_file,
+            )[0])
+        import pdb; pdb.set_trace()
+        next_action_logprob += torch.tensor(next_action_logprob_lm, device=scores['emission'].device)
+
+        # length biases
+        if i > 0:
+            # by batch
+            pred_spans[i]
+    # for 
+    return pred_spans

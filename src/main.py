@@ -95,6 +95,8 @@ def add_data_args(parser):
     # group.add_argument('--crosstask_cross_validation_n_train', type=int, default=30)
     group.add_argument('--crosstask_cross_validation_seed', type=int)
 
+    group.add_argument('--train_subset', choices=['train', 'train_heldout_step', 'train_heldout_transition'], default='train', help="subset of training data to use")
+
 
 def add_classifier_args(parser):
     group = parser.add_argument_group('classifier')
@@ -247,7 +249,13 @@ def train(args, train_data: Datasplit, dev_data: Datasplit, split_name, verbose=
             with open(model_fname, 'wb') as f:
                 pickle.dump(model, f)
 
-    model.fit(train_data, use_labels=use_labels, callback_fn=callback_fn)
+    assert split_name[-4:] == "_val"
+    task = int(split_name[:-4])
+    if args.remove_background:
+        # exclude background
+        action_classes = train_data.corpus.indices_by_task(task)
+        action_classes = [action for action in action_classes if train_data.corpus.index2label[action] != "BKG"]
+    model.fit(train_data, use_labels=use_labels, callback_fn=callback_fn, task=task, task_indices=action_classes)
 
     if early_stopping_on_dev and dev_mof_by_epoch:
         best_dev_epoch, best_dev_mof = max(dev_mof_by_epoch.items(), key=lambda t: t[1])
@@ -322,8 +330,8 @@ def make_data_splits(args):
             ]
         else:
             split_names_and_full = [
-                ('train', True, train_task_sets),
-                ('train', False, test_task_sets),
+                (args.train_subset, True, train_task_sets),
+                (args.train_subset, False, test_task_sets),
                 ('val', True, test_task_sets)
             ]
         if args.compare_load_splits_from_predictions:
@@ -339,7 +347,7 @@ def make_data_splits(args):
         else:
             val_videos_override = None
 
-            # TODO: here
+        # TODO: here
         if args.mix_tasks:
             splits['all'] = tuple(
                 corpus.get_datasplit(remove_background=args.remove_background,
@@ -441,11 +449,11 @@ if __name__ == "__main__":
 
     stats_by_split_by_task = {}
 
-    # transition_probs_wf = open("empirical_transition_probs.jsonl", "w")
-
     prediction_output_file = None
     if args.prediction_output_path is not None:
         prediction_output_file = open(os.path.join(args.prediction_output_path, "preds.jsonl"), 'w')
+        init_transition_probs_wf = open(os.path.join(args.prediction_output_path, "train_init_transition_probs.jsonl"), "w")
+        # transition_probs_wf = open(os.path.join(args.prediction_output_path, "train_transition_probs.jsonl"), "w")
 
     for split_name, (train_data, train_sub_data, test_data) in make_data_splits(args).items():
         print(split_name)
@@ -483,16 +491,18 @@ if __name__ == "__main__":
             else:
                 model = train(args, train_data, test_data, split_name, train_sub_data=train_sub_data)
 
-        """
-        task_indices = test_data._corpus.indices_by_task(int(split_name.replace("_val", "")))
+        # """
         # for label_index in task_indices: print(test_data._corpus.index2label[label_index])
         # print(model.model.transition_logits)
         # print(model.model.transition_log_probs(np.array(task_indices)).tolist())
-        transition_probs_wf.write(json.dumps({
-            "task_num": int(split_name.replace("_val", "")),
-            "actions": [test_data._corpus.index2label[label_index] for label_index in task_indices],
-            "task_probs": model.model.transition_log_probs(np.array(task_indices)).tolist(),
-        })+"\n")
+        if args.prediction_output_path is not None:
+            task_indices = test_data._corpus.indices_by_task(int(split_name.replace("_val", "")))
+            init_transition_probs_wf.write(json.dumps({
+                "task_num": int(split_name.replace("_val", "")),
+                "actions": [test_data._corpus.index2label[label_index] for label_index in task_indices],
+                "transition_probs": model.model.transition_log_probs(np.array(task_indices)).tolist(),
+                "init_probs": model.model.initial_log_probs(np.array(task_indices)).tolist(),
+            })+"\n")
         # continue
         # """
 

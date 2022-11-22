@@ -118,7 +118,7 @@ class CrosstaskVideo(Video):
 DATA_SPLITS = ['train', 'val', 'all']
 
 def load_videos_by_task(release_root, split='train', cv_n_train=30):
-    assert split in DATA_SPLITS or split.startswith('cv')
+    assert split in DATA_SPLITS or split.startswith('cv') or os.path.join(release_root, f"videos_{split}.csv") in list(glob.glob(os.path.join(release_root, "*.csv")))
 
     all_videos_by_task = get_vids(os.path.join(release_root, "videos.csv"))
     if split == 'all':
@@ -126,6 +126,9 @@ def load_videos_by_task(release_root, split='train', cv_n_train=30):
     val_videos_by_task = get_vids(os.path.join(release_root, "videos_val.csv"))
     if split == 'val':
         return val_videos_by_task
+    if split.startswith("train") and split != "train":
+        train_hardsplit_videos_by_task = get_vids(os.path.join(release_root, f"videos_{split}.csv"))
+        return train_hardsplit_videos_by_task
 
     val_videos = set(v for vids in val_videos_by_task.values() for v in vids)
     train_videos_by_task = {

@@ -69,7 +69,7 @@ env CUDA_VISIBLE_DEVICES=8 ./run_crosstask_i3d-resnet-audio.sh pca_semimarkov_un
 
 ## Training on subset
 ```bash
-env CUDA_VISIBLE_DEVICES=8 ./run_crosstask_i3d-resnet-audio.sh pca_semimarkov_sup --classifier semimarkov --training supervised --cuda --train_subset [train_heldout_step|train_heldout_transition]
+env CUDA_VISIBLE_DEVICES=8 ./run_crosstask_i3d-resnet-audio.sh pca_semimarkov_sup[_heldout_step|_heldout_transition] --classifier semimarkov --training supervised --cuda --train_subset [train_heldout_step|train_heldout_transition] --remove_background
 ```
 
 ## Experiments with priors
@@ -82,6 +82,24 @@ env CUDA_VISIBLE_DEVICES=9 ./run_crosstask_i3d-resnet-audio.sh pca_semimarkov_su
     --model_input_path expts/crosstask_i3d-resnet-audio/pca_semimarkov_sup_nobkg/ \
     --cuda --prediction_output_path expts/crosstask_i3d-resnet-audio/pca_semimarkov_sup_nobkg/
 ```
+
+env CUDA_VISIBLE_DEVICES=8 ./run_crosstask_i3d-resnet-audio.sh pca_semimarkov_sup_heldout_transition_gpt3_priors \
+--classifier semimarkov \
+--training supervised \
+--remove_background \
+--train_subset train_heldout_transition \
+--model_input_path expts/crosstask_i3d-resnet-audio/pca_semimarkov_sup_heldout_transition_gpt3_priors/ \
+--cuda \
+--prediction_output_path expts/crosstask_i3d-resnet-audio/pca_semimarkov_sup_heldout_transition_gpt3_priors
+
+env CUDA_VISIBLE_DEVICES=8 ./run_crosstask_i3d-resnet-audio.sh pca_semimarkov_sup_heldout_transition \
+--classifier semimarkov \
+--training supervised \
+--remove_background \
+--train_subset train_heldout_transition \
+--model_input_path expts/crosstask_i3d-resnet-audio/pca_semimarkov_sup_heldout_transition/ \
+--cuda \
+--prediction_output_path expts/crosstask_i3d-resnet-audio/pca_semimarkov_sup_heldout_transition
 
 2. GT priors inference
 ```bash
@@ -117,6 +135,29 @@ env CUDA_VISIBLE_DEVICES=8 ./run_crosstask_i3d-resnet-audio.sh pca_semimarkov_un
     --cuda --saved_probabilities lm_bigram \
     --prediction_output_path expts/crosstask_i3d-resnet-audio/pca_semimarkov_unsup_lmpriors
 ```
+
+* Supervised (held-out steps)
+```bash
+env CUDA_VISIBLE_DEVICES=8 ./run_crosstask_i3d-resnet-audio.sh pca_semimarkov_sup_heldout_step_lmpriors \
+    --classifier semimarkov \
+    --training supervised \
+    --remove_background \
+    --model_input_path expts/crosstask_i3d-resnet-audio/pca_semimarkov_sup_heldout_step/ \
+    --cuda --saved_probabilities gpt3_bigram \
+    --prediction_output_path expts/crosstask_i3d-resnet-audio/pca_semimarkov_sup_heldout_step_lmpriors
+```
+
+* Supervised (held-out transitions)
+```bash
+env CUDA_VISIBLE_DEVICES=8 ./run_crosstask_i3d-resnet-audio.sh pca_semimarkov_sup_heldout_transition_lmpriors \
+    --classifier semimarkov \
+    --training supervised \
+    --remove_background \
+    --model_input_path expts/crosstask_i3d-resnet-audio/pca_semimarkov_sup_heldout_transition/ \
+    --cuda --saved_probabilities gpt3_bigram \
+    --prediction_output_path expts/crosstask_i3d-resnet-audio/pca_semimarkov_sup_heldout_transition_lmpriors
+```
+
 
 4. Full context with LM Priors
 ```bash

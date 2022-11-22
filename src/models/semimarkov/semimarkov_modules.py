@@ -15,7 +15,7 @@ from models.sequential import Encoder
 from models.flow import NICETrans
 from utils.utils import all_equal
 
-from models.semimarkov.semimarkov_utils import semimarkov_sufficient_stats
+from models.semimarkov.semimarkov_utils import semimarkov_sufficient_stats, greedy_lm_search
 
 BIG_NEG = -1e9
 # BIG_NEG = -1e30
@@ -50,16 +50,24 @@ class ResidualLayer(nn.Module):
 
 saved_probs = {
     "transition": {
-        "train": np.load("saved_probabilities/transition/train.pkl.npy", allow_pickle=True).item(),
-        "val": np.load("saved_probabilities/transition/val.pkl.npy", allow_pickle=True).item(),
-        "lm_bigram": np.load("saved_probabilities/transition/lm_bigrams.pkl.npy", allow_pickle=True).item(),
-        "lm_global": np.load("saved_probabilities/transition/lm_globals.pkl.npy", allow_pickle=True).item(),
+        "train": np.load(f"saved_probabilities/transition/train.pkl.npy", allow_pickle=True).item(),
+        "val": np.load(f"saved_probabilities/transition/val.pkl.npy", allow_pickle=True).item(),
+        "gpt3_bigram": np.load(f"saved_probabilities/transition/lm_bigrams_text.pkl.npy", allow_pickle=True).item(),
+        "gpt3_global": np.load(f"saved_probabilities/transition/lm_globals_text.pkl.npy", allow_pickle=True).item(),
+        "codex_bigram": np.load(f"saved_probabilities/transition/lm_bigrams_code.pkl.npy", allow_pickle=True).item(),
+        "codex_global": np.load(f"saved_probabilities/transition/lm_globals_code.pkl.npy", allow_pickle=True).item(),
+        "random_bigram": np.load(f"saved_probabilities/transition/lm_bigrams_random.pkl.npy", allow_pickle=True).item(),
+        "random_global": np.load(f"saved_probabilities/transition/lm_globals_random.pkl.npy", allow_pickle=True).item(),
     },
     "init": {
         # "train": np.load("saved_probabilities/init/train.pkl.npy", allow_pickle=True).item(),
         "val": np.load("saved_probabilities/init/val.pkl.npy", allow_pickle=True).item(),
-        "lm_bigram": np.load("saved_probabilities/init/lm_bigrams.pkl.npy", allow_pickle=True).item(),
-        "lm_global": np.load("saved_probabilities/init/lm_globals.pkl.npy", allow_pickle=True).item(),
+        "gpt3_bigram": np.load("saved_probabilities/init/lm_bigrams_text.pkl.npy", allow_pickle=True).item(),
+        "gpt3_global": np.load("saved_probabilities/init/lm_globals_text.pkl.npy", allow_pickle=True).item(),
+        "codex_bigram": np.load("saved_probabilities/init/lm_bigrams_code.pkl.npy", allow_pickle=True).item(),
+        "codex_global": np.load("saved_probabilities/init/lm_globals_code.pkl.npy", allow_pickle=True).item(),
+        "random_bigram": np.load("saved_probabilities/init/lm_bigrams_random.pkl.npy", allow_pickle=True).item(),
+        "random_global": np.load("saved_probabilities/init/lm_globals_random.pkl.npy", allow_pickle=True).item(),
     }
 }
 
@@ -67,6 +75,7 @@ class SemiMarkovModule(nn.Module):
     @classmethod
     def add_args(cls, parser):
         parser.add_argument('--sm_max_span_length', type=int, default=20)
+        parser.add_argument('--use_lm_smoothing', type=str, choices=[False, *list(saved_probs["transition"].keys())], default=False)
         parser.add_argument('--sm_supervised_state_smoothing', type=float, default=1e-2)
         parser.add_argument('--sm_supervised_length_smoothing', type=float, default=1e-1)
         parser.add_argument('--sm_supervised_method',
@@ -76,9 +85,15 @@ class SemiMarkovModule(nn.Module):
         # parser.add_argument('--sm_projection_dim', type=int)
         parser.add_argument('--sm_feature_projection', action='store_true', help='use a flow')
         parser.add_argument('--sm_init_non_projection_parameters_from')
+        # parser.add_argument('--sm_init_transition_probs_from_saved',
+        #                     action='store_true', default=False,
+        #                     help='initialize transition probability from `saved_probabilities` (when training unsupervised)')
         parser.add_argument('--saved_probabilities', type=str,
-                            choices=[None, "train", "val", "lm_bigram", "lm_global"],
+                            choices=[None] + list(saved_probs["init"].keys()),
                             default=None, help='what probabilites to use for transitions')
+        parser.add_argument('--use_full_ctxt_greedy_decode',
+                            action='store_true', default=False,
+                            help='Instead of running Viterbi to optimally solve the HMM, model as depending on full context, and run greedy decoding')
         NICETrans.add_args(parser)
 
     def __init__(self, args, n_classes, n_dims,
@@ -104,6 +119,12 @@ class SemiMarkovModule(nn.Module):
             self.set_transition_constraints(allowed_starts, allowed_transitions, allowed_ends)
         else:
             self.remove_transition_constraints()
+        # if args.sm_init_transition_probs_from_saved:
+        #     self.init_parameters_from_dict({
+        #         "init_logits": saved_probs["init"][args.saved_probabilities],
+        #         "transition_logits": saved_probs["transition"][args.saved_probabilities],
+        #     })
+
         if args.sm_init_non_projection_parameters_from is not None:
             print("loading all non-flow parameters from {}".format(args.sm_init_non_projection_parameters_from))
             with open(args.sm_init_non_projection_parameters_from, 'rb') as f:
@@ -145,6 +166,10 @@ class SemiMarkovModule(nn.Module):
         assert not incompatible_keys.unexpected_keys, incompatible_keys.unexpected_keys
         assert all(k.startswith("feature_projector") for k in incompatible_keys.missing_keys), incompatible_keys.missing_Keys
 
+    def init_parameters_from_dict(self, params_dict):
+        import pdb; pdb.set_trace()
+        return self.load_state_dict(params_dict, strict=False)
+
     def init_projector(self):
         if self.args.sm_feature_projection:
             # self.feature_projector = nn.Sequential(
@@ -165,6 +190,8 @@ class SemiMarkovModule(nn.Module):
 
         # shared, tied, diagonal covariance matrix
         gaussian_cov = torch.eye(self.feature_dim).float()
+        if self.args.train_subset == "train_heldout_step":
+            gaussian_cov = gaussian_cov.unsqueeze(0).repeat(self.n_classes, 1, 1)
         self.gaussian_cov = nn.Parameter(gaussian_cov, requires_grad=False)
 
         # target x source
@@ -209,7 +236,7 @@ class SemiMarkovModule(nn.Module):
 
         self.allowed_ends = allowed_ends
 
-    def fit_supervised(self, feature_list, label_list):
+    def fit_supervised(self, feature_list, label_list, task: int=None, task_indices: dict=None):
         if self.feature_projector is not None:
             raise NotImplementedError("fit_supervised closed form with feature projector")
 
@@ -218,7 +245,7 @@ class SemiMarkovModule(nn.Module):
 
         emission_gmm, stats = semimarkov_sufficient_stats(
             feature_list, label_list,
-            covariance_type='tied_diag',
+            covariance_type=('tied_diag' if self.args.train_subset != "train_heldout_step" else 'diag'),
             n_classes=self.n_classes,
             max_k=self.max_k,
         )
@@ -229,7 +256,7 @@ class SemiMarkovModule(nn.Module):
             ]
             emission_gmm_merged, stats_merged = semimarkov_sufficient_stats(
                 feature_list, label_list_merged,
-                covariance_type='tied_diag',
+                covariance_type=('tied_diag' if self.args.train_subset != "train_heldout_step" else 'diag'),
                 n_classes=self.n_classes,
                 max_k=self.max_k,
             )
@@ -241,17 +268,47 @@ class SemiMarkovModule(nn.Module):
             emission_gmm = emission_gmm_merged
             stats = stats_merged
 
+        if self.args.use_lm_smoothing:
+            init_smoothing_factor = saved_probs["init"][self.args.use_lm_smoothing][task].numpy() * len(task_indices) * self.args.sm_supervised_state_smoothing
+        else:
+            # import pdb; pdb.set_trace()
+            init_smoothing_factor = np.array([self.args.sm_supervised_state_smoothing for _ in task_indices])
+        action_mask = np.zeros(stats['span_start_counts'].shape, dtype=np.bool)
+        action_mask[task_indices] = True
+        init_probs = np.zeros(stats['span_start_counts'].shape, dtype=np.float32)
+        # set unused actions constant
+        init_probs[~action_mask] = 0.0
+        # (stats['span_start_counts'][~action_mask] + self.args.sm_supervised_state_smoothing) / float(stats['instance_count'] + self.args.sm_supervised_state_smoothing * self.n_classes)
+        # otherwise set according to LM priors
+        init_probs[action_mask] = (stats['span_start_counts'][action_mask] + init_smoothing_factor) / float(
+            stats['instance_count'] + self.args.sm_supervised_state_smoothing * len(task_indices))
+        init_probs_old = (stats['span_start_counts'] + self.args.sm_supervised_state_smoothing) / float(
+            stats['instance_count'] + self.args.sm_supervised_state_smoothing * len(task_indices))
+        init_probs[~action_mask] = init_probs_old[~action_mask]
+        # expand to all probabilities...
+        # smoothing_factor = 
         # transition probs use unmerged classes
-        init_probs = (stats['span_start_counts'] + self.args.sm_supervised_state_smoothing) / float(
-            stats['instance_count'] + self.args.sm_supervised_state_smoothing * self.n_classes)
         init_probs[np.isnan(init_probs)] = 0
         # assert np.allclose(init_probs.sum(), 1.0), init_probs
         self.init_logits.data.zero_()
         self.init_logits.data.add_(torch.from_numpy(init_probs).to(device=self.init_logits.device).log())
 
+        if self.args.use_lm_smoothing:
+            trans_smoothing_factor = saved_probs["transition"][self.args.use_lm_smoothing][task].numpy() * len(task_indices) * self.args.sm_supervised_state_smoothing
+        else:
+            trans_smoothing_factor = np.array([[self.args.sm_supervised_state_smoothing for _ in task_indices] for _ in task_indices])
+        trans_probs = np.zeros(stats['span_transition_counts'].shape, dtype=np.float32)
+        transition_mask = np.expand_dims(action_mask, axis=-1) & np.expand_dims(action_mask, axis=0)
+        # set unused actions constant
+        trans_probs[~transition_mask] = 0.0
+        # otherwise set according to LM priors
+        trans_probs[transition_mask] = (stats['span_transition_counts'][transition_mask] + trans_smoothing_factor.flatten())
+        # / (stats['span_transition_counts'][transition_mask] + self.args.sm_supervised_state_smoothing * len(task_indices))
+        trans_probs /= trans_probs.sum(axis=0)[None, :]
         smoothed_trans_counts = stats['span_transition_counts'] + self.args.sm_supervised_state_smoothing
+        trans_probs_old = smoothed_trans_counts / smoothed_trans_counts.sum(axis=0)[None, :]
+        trans_probs[~transition_mask] = trans_probs_old[~transition_mask]
 
-        trans_probs = smoothed_trans_counts / smoothed_trans_counts.sum(axis=0)[None, :]
         trans_probs[np.isnan(trans_probs)] = 0
         # to, from -- so rows should sum to 1
         # assert np.allclose(trans_probs.sum(axis=0), 1.0, rtol=1e-3), (trans_probs.sum(axis=0), trans_probs)
@@ -269,8 +326,12 @@ class SemiMarkovModule(nn.Module):
             torch.from_numpy(emission_gmm_merged.means_).to(device=self.gaussian_means.device).float())
 
         self.gaussian_cov.data.zero_()
-        self.gaussian_cov.data.add_(
-            torch.diag(torch.from_numpy(emission_gmm_merged.covariances_[0]).to(device=self.gaussian_cov.device).float()))
+        if self.args.train_subset == "train_heldout_step":
+            self.gaussian_cov.data.add_(
+                torch.stack([torch.diag(torch.from_numpy(cov_item)) for cov_item in emission_gmm_merged.covariances_]).to(device=self.gaussian_cov.device).float())
+        else:
+            self.gaussian_cov.data.add_(
+                torch.diag(torch.from_numpy(emission_gmm_merged.covariances_[0]).to(device=self.gaussian_cov.device).float()))
 
     def _initialize_gaussian_means(self, mean):
         # self.gaussian_means.data = mean.expand((self.n_classes, self.n_dims))
@@ -288,7 +349,10 @@ class SemiMarkovModule(nn.Module):
         self._initialize_gaussian_means(mean)
         #
         # TODO: consider using the biased estimator, with torch >= 1.2?
-        self.gaussian_cov.data = torch.diag(feats.var(dim=0))
+        if self.args.train_subset == "train_heldout_step":
+            import pdb; pdb.set_trace()
+        else:
+            self.gaussian_cov.data = torch.diag(feats.var(dim=0))
 
     def initialize_gaussian(self, data, lengths):
         batch_size, N, n_dim = data.size()
@@ -338,16 +402,17 @@ class SemiMarkovModule(nn.Module):
         # so each column should be normalized (in log-space)
         return F.log_softmax(masked, dim=0)
     
-    def transition_log_probs_from_file(self, valid_classes, corpus_index2label, task, probs):
+    def transition_log_probs_from_file(self, valid_classes, task, probs):
+        # empirical_logprobs_stacked = []
         empirical_logprobs = self.transition_log_probs(valid_classes)
         # nonbkg_class_idxs = (valid_classes != 0).nonzero(as_tuple=False).squeeze()
         # class_to_nonbkg_logprob = empirical_logprobs[nonbkg_class_idxs][:,nonbkg_class_idxs]
         # class_to_total_nonbkg_prob = class_to_nonbkg_logprob.exp().sum(0)
-        nonself_class_mask = ~(torch.eye(empirical_logprobs.shape[0]).bool())
-        class_to_nonself_logprob = empirical_logprobs.t()[nonself_class_mask].view(empirical_logprobs.shape[0], empirical_logprobs.shape[0]-1).t()
+        # non-self-transitions
+        self_class_mask = torch.eye(empirical_logprobs.shape[0]).bool()
+        class_to_nonself_logprob = empirical_logprobs.t()[~self_class_mask].view(empirical_logprobs.shape[0], empirical_logprobs.shape[0]-1).t()
         class_to_total_nonself_prob = class_to_nonself_logprob.exp().sum(0)
         # if task == 105253: import pdb; pdb.set_trace()
-        # non-self-transitions
         if (probs[task] != probs[task]).any():
             # haven't seen anything after this action in this task before... uniform prior...
             assert (((probs[task] != probs[task]).sum(0) == 0) | ((probs[task] != probs[task]).sum(0) == probs[task].shape[0])).all()
@@ -357,23 +422,29 @@ class SemiMarkovModule(nn.Module):
             class_to_total_nonself_prob.device, class_to_total_nonself_prob.dtype
         ) * class_to_total_nonself_prob).log()
         # nonbkg_class_mask = (valid_classes != 0) & (valid_classes != 0).unsqueeze(-1)
-        empirical_logprobs[nonself_class_mask] = new_logprobs[nonself_class_mask]
-        return empirical_logprobs
+        new_logprobs[self_class_mask] = empirical_logprobs[self_class_mask]
+        # empirical_logprobs_stacked.append(empirical_logprobs)
+        # empirical_logprobs_stacked = torch.stack(empirical_logprobs_stacked)
+        # import pdb; pdb.set_trace()
+        return new_logprobs
 
-    def initial_log_probs_from_file(self, valid_classes, corpus_index2label, task, probs):
+    def initial_log_probs_from_file(self, valid_classes, task, probs):
+        # empirical_logprobs_stacked = []
+        # for t, task in enumerate(tasks):
         empirical_logprobs = self.initial_log_probs(valid_classes)
-        # nonbkg_class_idxs = (valid_classes != 0).nonzero(as_tuple=False).squeeze()
+        # # nonbkg_class_idxs = (valid_classes != 0).nonzero(as_tuple=False).squeeze()
         nonbkg_class_mask = valid_classes != 0
-        class_to_nonbkg_logprob = empirical_logprobs[nonbkg_class_mask]
-        class_to_total_nonbkg_prob = class_to_nonbkg_logprob.exp().sum(0)
+        if not nonbkg_class_mask.all(): import pdb; pdb.set_trace()
+        # class_to_nonbkg_logprob = empirical_logprobs[nonbkg_class_mask]
+        # class_to_total_nonbkg_prob = class_to_nonbkg_logprob.exp().sum(0)
         # recalibrate all other non-background logits
-        new_logprobs = (torch.tensor(probs[task]).to(
-            class_to_total_nonbkg_prob.device, class_to_total_nonbkg_prob.dtype
-        ) * class_to_total_nonbkg_prob).log()
-        empirical_logprobs[nonbkg_class_mask] = new_logprobs
-        return empirical_logprobs
+        new_logprobs = torch.tensor(probs[task]).to(empirical_logprobs.device, empirical_logprobs.dtype).log()
+        # empirical_logprobs[nonbkg_class_mask] = new_logprobs
+        # empirical_logprobs_stacked.append(empirical_logprobs)
+        # empirical_logprobs_stacked = torch.stack(empirical_logprobs_stacked)
+        return new_logprobs
 
-    def _emission_log_probs_with_means(self, features, class_means):
+    def _emission_log_probs_with_means(self, features, class_means, class_covs=None):
         # num_classes, d_ = class_means.size()
         # b, N, d = features.size()
         # assert d == d_, (d, d_)
@@ -398,7 +469,13 @@ class SemiMarkovModule(nn.Module):
             assert d == d_, (d, d_)
         class_means = class_means.expand(B, num_classes, d)
 
-        scale_tril = self.gaussian_cov.sqrt()
+        if self.args.train_subset == "train_heldout_step":
+            # (c,d,d)
+            class_scale_tril = class_covs.sqrt()
+        else:
+            scale_tril = self.gaussian_cov.sqrt()
+            # (c,d,d)
+            class_scale_tril = scale_tril.unsqueeze(0).repeat(num_classes,1,1)
 
         # b x N x num_classes
 
@@ -406,7 +483,7 @@ class SemiMarkovModule(nn.Module):
         for c in range(num_classes):
             # b x d
             this_means = class_means[:, c, :]
-            dist = MultivariateNormal(loc=this_means, scale_tril=scale_tril)
+            dist = MultivariateNormal(loc=this_means, scale_tril=class_scale_tril[c])
             #  features.transpose(0,1): N x b x d
             log_probs.append(
                 dist.log_prob(features.transpose(0, 1)).transpose(0, 1).unsqueeze(-1)  # b x N x 1
@@ -427,7 +504,8 @@ class SemiMarkovModule(nn.Module):
                 [self.merge_classes[ix.item()] for ix in class_indices],
             ).to(self.gaussian_means.device)
         class_means = self.gaussian_means[class_indices]
-        elp = self._emission_log_probs_with_means(features, class_means)
+        class_covs = self.gaussian_cov[class_indices]
+        elp = self._emission_log_probs_with_means(features, class_means, class_covs=class_covs)
         if constraints is not None:
             elp = elp + constraints
         return elp
@@ -470,13 +548,13 @@ class SemiMarkovModule(nn.Module):
                  all_batched=False, allowed_ends_per_instance=None):
         """
         Convert HSMM to a linear chain.
-        Parameters (if all_batched = True):
+        Parameters (if all_batched = False):
             transition: C X C
             emission_scores: b x N x C
             init: C
             length_scores: K x C
             add_eos: bool, whether to augment with an EOS class (with index C) which can only appear in the final timestep
-        OR, if all_batched = False:
+        OR, if all_batched = True:
             transition: b x C X C
             emission_scores: b x N x C
             init: b x C
@@ -486,6 +564,9 @@ class SemiMarkovModule(nn.Module):
             all_batched: if False, emission_scores is the only tensor with a batch dimension
         Returns:
             edges: b x (N-1) x C x C if not add_eos, or b x (N) x (C+1) x (C+1) if add_eos
+        N: timesteps in sample
+        K: width
+        C: valid actions
         """
         b, N_1, C_1 = emission_scores.shape
         if all_batched:
@@ -604,7 +685,7 @@ class SemiMarkovModule(nn.Module):
 
     def score_features(self, features, lengths, valid_classes, add_eos, use_mean_z,
                        additional_allowed_ends_per_instance=None,
-                       constraints=None, return_elp=False, corpus_index2label=None, task=None):
+                       constraints=None, return_all_scores=False, task=None):
         # assert all_equal(lengths), "varied length scoring isn't implemented"
         # TODO: make this functional
         self.set_z(features, lengths, use_mean=use_mean_z)
@@ -630,29 +711,34 @@ class SemiMarkovModule(nn.Module):
 
         elp = self.emission_log_probs(projected_features, valid_classes, constraints)
 
+        # import pdb; pdb.set_trace()
+        # # self.transition_log_probs(valid_classes) [is batch_size???]
+        length_log_probs = self.length_log_probs(valid_classes)
+        # all_batched = self.args.saved_probabilities is not None #and len(tasks) > 1
+        # if all_batched:
+        #     length_log_probs = length_log_probs.unsqueeze(0).repeat([len(tasks),1,1])
         scores = self.log_hsmm(
             self.transition_log_probs_from_file(
-                valid_classes, corpus_index2label, task, saved_probs["transition"][self.args.saved_probabilities],
+                valid_classes, task, saved_probs["transition"][self.args.saved_probabilities],
             ) if self.args.saved_probabilities is not None else self.transition_log_probs(valid_classes),
             elp,
-            # self.initial_log_probs_from_file(
-            #     valid_classes, corpus_index2label, task, saved_probs["init"][self.args.saved_probabilities],
-            # ) if self.args.saved_probabilities is not None else 
-            self.initial_log_probs(valid_classes),
-            self.length_log_probs(valid_classes),
+            self.initial_log_probs_from_file(
+                valid_classes, task, saved_probs["init"][self.args.saved_probabilities],
+            ) if self.args.saved_probabilities is not None else self.initial_log_probs(valid_classes),
+            length_log_probs,
             lengths,
             add_eos=add_eos,
-            all_batched=self.batched_scores,
+            all_batched=self.batched_scores, #(self.batched_scores or all_batched),
             allowed_ends_per_instance=allowed_ends_per_instance,
         )
 
-        if return_elp:
-            return scores, log_det, elp
+        if return_all_scores:
+            return scores, log_det, {"emission": elp, "length": length_log_probs}
         else:
             return scores, log_det
 
     def log_likelihood(self, features, lengths, valid_classes_per_instance, spans=None, add_eos=True, use_mean_z=False,
-                       additional_allowed_ends_per_instance=None, constraints=None):
+                       additional_allowed_ends_per_instance=None, constraints=None, tasks=None):
         if valid_classes_per_instance is not None:
             assert all_equal(set(vc.detach().cpu().numpy()) for vc in
                              valid_classes_per_instance), "must have same valid_classes for all instances in the batch"
@@ -661,10 +747,15 @@ class SemiMarkovModule(nn.Module):
         else:
             valid_classes = None
             C = self.n_classes
+        if tasks is not None:
+            assert len(set(tasks)) == 1, "must have same task for all instances in the batch"
+            task = tasks[0]
+        else:
+            task = None
 
         scores, log_det = self.score_features(features, lengths, valid_classes, add_eos=add_eos, use_mean_z=use_mean_z,
                                      additional_allowed_ends_per_instance=additional_allowed_ends_per_instance,
-                                     constraints=constraints)
+                                     constraints=constraints, task=task)
 
         K = scores.size(2)
         assert K <= self.max_k or (self.max_k == 1 and K == 2)
@@ -715,7 +806,7 @@ class SemiMarkovModule(nn.Module):
         return log_likelihood, log_det.mean()
 
     def viterbi(self, features, lengths, valid_classes_per_instance, add_eos=True, use_mean_z=False,
-                additional_allowed_ends_per_instance=None, constraints=None, predict_single=False, return_elp=False,
+                additional_allowed_ends_per_instance=None, constraints=None, predict_single=False, #return_all_scores=False,
                 corpus_index2label=None, task=None):
         if valid_classes_per_instance is not None:
             assert all_equal(set(vc.detach().cpu().numpy()) for vc in
@@ -725,33 +816,36 @@ class SemiMarkovModule(nn.Module):
         else:
             valid_classes = None
             C = self.n_classes
-        scores, log_det, elp = self.score_features(features, lengths, valid_classes, add_eos=add_eos, use_mean_z=use_mean_z,
+        scores, log_det, all_scores = self.score_features(features, lengths, valid_classes, add_eos=add_eos, use_mean_z=use_mean_z,
                                      additional_allowed_ends_per_instance=additional_allowed_ends_per_instance,
-                                     constraints=constraints, return_elp=True, corpus_index2label=corpus_index2label, task=task)
+                                     constraints=constraints, return_all_scores=True, task=task)
         if add_eos:
             eos_lengths = lengths + 1
         else:
             eos_lengths = lengths
-        dist = SemiMarkovCRF(scores, lengths=eos_lengths)
-
-        pred_spans, extra = dist.struct.from_parts(dist.argmax)
-        # convert to class labels
-        # pred_spans_trim = self.model.trim(pred_spans, lengths, check_eos=add_eos)
-
-        pred_spans_unmap = pred_spans.detach().cpu()
         if valid_classes is not None:
             mapping = {index: cls.item() for index, cls in enumerate(valid_classes)}
             assert len(mapping.values()) == len(mapping), "valid_classes must be unique"
             assert -1 not in mapping.values()
             mapping[-1] = -1
             mapping[C] = self.n_classes  # map EOS
-            # unmap
-            pred_spans_unmap.apply_(lambda x: mapping[x])
-
-        if return_elp:
-            return pred_spans_unmap, elp
+        if self.args.use_full_ctxt_greedy_decode:
+            pred_spans = greedy_lm_search(all_scores, task=task, lengths=eos_lengths, add_eos=add_eos, valid_classes_mapping=mapping, corpus_index2label=corpus_index2label)
         else:
-            return pred_spans_unmap
+            dist = SemiMarkovCRF(scores, lengths=eos_lengths)
+            pred_spans, extra = dist.struct.from_parts(dist.argmax)
+            # convert to class labels
+            # pred_spans_trim = self.model.trim(pred_spans, lengths, check_eos=add_eos)
+
+            pred_spans_unmap = pred_spans.detach().cpu()
+            if valid_classes is not None:
+                # unmap
+                pred_spans_unmap.apply_(lambda x: mapping[x])
+
+        # if return_all_scores:
+        #     return pred_spans_unmap, elp
+        # else:
+        return pred_spans_unmap
 
 
 class ComponentSemiMarkovModule(SemiMarkovModule):

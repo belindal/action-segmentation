@@ -122,7 +122,7 @@ class SemiMarkovModel(Model):
         if args.cuda:
             self.model.cuda()
 
-    def fit_supervised(self, train_data: Datasplit):
+    def fit_supervised(self, train_data: Datasplit, task: int=None, task_indices: dict=None):
         assert not self.args.sm_component_model
         assert not self.args.sm_constrain_transitions
         loader = make_data_loader(self.args, train_data, batch_by_task=False, shuffle=False, batch_size=1)
@@ -130,7 +130,7 @@ class SemiMarkovModel(Model):
         for batch in loader:
             features.append(batch['features'].squeeze(0))
             labels.append(batch['gt_single'].squeeze(0))
-        self.model.fit_supervised(features, labels)
+        self.model.fit_supervised(features, labels, task=task, task_indices=task_indices)
 
     def make_additional_allowed_ends(self, tasks, lengths):
         if self.ordered_indices_by_task is not None:
@@ -156,14 +156,14 @@ class SemiMarkovModel(Model):
             constraints_expanded[:,:,task_indices.index(label)] = constraints[:,:,index]
         return constraints_expanded
 
-    def fit(self, train_data: Datasplit, use_labels: bool, callback_fn=None):
+    def fit(self, train_data: Datasplit, use_labels: bool, callback_fn=None, task=None, task_indices=None):
         self.model.train()
         self.model.flatten_parameters()
         if use_labels:
             assert not self.args.sm_constrain_transitions
         initialize = True
         if use_labels and self.args.sm_supervised_method in ['closed-form', 'closed-then-gradient']:
-            self.fit_supervised(train_data)
+            self.fit_supervised(train_data, task=task, task_indices=task_indices)
             if self.args.sm_supervised_method == 'closed-then-gradient':
                 initialize = False
                 callback_fn(-1, {})
@@ -173,6 +173,10 @@ class SemiMarkovModel(Model):
             initialize = False
             if callback_fn:
                 callback_fn(-1, {})
+        # if self.args.sm_init_transition_probs_from_saved:
+        #     initialize = False
+        #     if callback_fn:
+        #         import pdb; pdb.sest_trace()
         optimizer, scheduler = make_optimizer(self.args, self.model.parameters())
         big_loader = make_data_loader(self.args, train_data, batch_by_task=False, shuffle=True, batch_size=100)
         samp = next(iter(big_loader))
@@ -263,7 +267,9 @@ class SemiMarkovModel(Model):
                                                  add_eos=True,
                                                  use_mean_z=use_mean_z,
                                                  additional_allowed_ends_per_instance=addl_allowed_ends,
-                                                 constraints=constraints_expanded)
+                                                 constraints=constraints_expanded,
+                                                #  corpus_index2label=train_data._corpus.index2label,
+                                                 tasks=tasks)
                 nll = -ll
                 kl = self.model.kl.mean()
                 if use_labels:
@@ -358,9 +364,9 @@ class SemiMarkovModel(Model):
 
             def predict(constraints):
                 # TODO: figure out under which eval conditions use_mean_z should be False
-                pred_spans, elp = self.model.viterbi(features, lengths, task_indices, add_eos=True, use_mean_z=True,
+                pred_spans = self.model.viterbi(features, lengths, task_indices, add_eos=True, use_mean_z=True,
                                                 additional_allowed_ends_per_instance=addl_allowed_ends,
-                                                constraints=constraints, return_elp=True, corpus_index2label=test_data._corpus.index2label, task=task)
+                                                constraints=constraints, corpus_index2label=test_data._corpus.index2label, task=task)
                 pred_labels = semimarkov_utils.spans_to_labels(pred_spans)
                 # if self.args.sm_predict_single:
                 #     # pred_spans: batch_size x T

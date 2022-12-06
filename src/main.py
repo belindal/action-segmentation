@@ -251,6 +251,7 @@ def train(args, train_data: Datasplit, dev_data: Datasplit, split_name, verbose=
 
     assert split_name[-4:] == "_val"
     task = int(split_name[:-4])
+    action_classes = train_data.corpus.indices_by_task(task)
     if args.remove_background:
         # exclude background
         action_classes = train_data.corpus.indices_by_task(task)
@@ -497,6 +498,11 @@ if __name__ == "__main__":
         # print(model.model.transition_log_probs(np.array(task_indices)).tolist())
         if args.prediction_output_path is not None:
             task_indices = test_data._corpus.indices_by_task(int(split_name.replace("_val", "")))
+            # remove background
+            task_indices = [idx for idx in task_indices if idx != 0]
+            # if int(split_name.replace("_val", "")) == 16815:
+            #     import pdb; pdb.set_trace()
+            # import pdb; pdb.set_trace()
             init_transition_probs_wf.write(json.dumps({
                 "task_num": int(split_name.replace("_val", "")),
                 "actions": [test_data._corpus.index2label[label_index] for label_index in task_indices],

@@ -10,6 +10,7 @@ all_videos_fn = "data/crosstask/crosstask_release/videos.csv"
 val_videos_fn = "data/crosstask/crosstask_release/videos_val.csv"
 
 hardsplit_train_step_videos_fn = "data/crosstask/crosstask_release/videos_train_heldout_step.csv"
+hardsplit_val_step_videos_fn = "data/crosstask/crosstask_release/videos_val_heldout_step.jsonl"
 hardsplit_train_transition_videos_fn = "data/crosstask/crosstask_release/videos_train_heldout_transition.csv"
 hardsplit_val_transition_videos_fn = "data/crosstask/crosstask_release/videos_val_heldout_transition.jsonl"
 
@@ -78,26 +79,47 @@ def make_heldout_step_train_splits(videos_fn):
         for split in split_to_task_to_steps_to_vids:
             for step in task_to_steps_to_count[task]:
                 persplit_task_to_step_to_percentvidspresent[split][task][step] = len(split_to_task_to_steps_to_vids[split][task][step]) / len(split_to_task_to_vids[split][task])
-                persplit_task_to_step_to_remainingvids[split][task][step] = len(split_to_task_to_vids[split][task]) - len(split_to_task_to_steps_to_vids[split][task][step])
+                persplit_task_to_step_to_remainingvids[split][task][step] = {
+                    "has_action": split_to_task_to_steps_to_vids[split][task][step],
+                    "no_action": [vid for vid in split_to_task_to_vids[split][task] if vid not in split_to_task_to_steps_to_vids[split][task][step]]
+                }
+                # len(split_to_task_to_vids[split][task]) - len(split_to_task_to_steps_to_vids[split][task][step])
         for action in split_to_task_to_steps_to_vids["train"][task]:
             # import pdb; pdb.set_trace()
             if task_to_actionwithleasttrainvids[task] is None:
                 task_to_actionwithleasttrainvids[task] = action
-            elif persplit_task_to_step_to_remainingvids["train"][task][action] > persplit_task_to_step_to_remainingvids["train"][task][task_to_actionwithleasttrainvids[task]]:
+            elif (
+                len(persplit_task_to_step_to_remainingvids["train"][task].get(action, {"no_action": []})["no_action"]) >
+                len(persplit_task_to_step_to_remainingvids["train"][task][task_to_actionwithleasttrainvids[task]])
+            ):
                 task_to_actionwithleasttrainvids[task] = action
         print(task_num_to_desc[task])
         # print(split_to_task_to_steps_to_vids["train"][task])
         # print(split_to_task_to_steps_to_vids["valid"][task])
-        print(f"    {task_to_actionwithleasttrainvids[task]} {persplit_task_to_step_to_percentvidspresent['train'][task][task_to_actionwithleasttrainvids[task]]} ({persplit_task_to_step_to_remainingvids['train'][task][task_to_actionwithleasttrainvids[task]]} remaining)")
+        print(f"    {task_to_actionwithleasttrainvids[task]} {persplit_task_to_step_to_percentvidspresent['train'][task][task_to_actionwithleasttrainvids[task]]} ({len(persplit_task_to_step_to_remainingvids['train'][task][task_to_actionwithleasttrainvids[task]]['no_action'])} remaining)")
         print(f"    {task_to_actionwithleasttrainvids[task]} {persplit_task_to_step_to_percentvidspresent['valid'][task][task_to_actionwithleasttrainvids[task]]}")
         # print(persplit_task_to_step_to_percentvidspresent["valid"][task])
+
+    with open(hardsplit_val_step_videos_fn, "w") as wf:
+        # valid videos with missing step
+        for task in split_to_task_to_vids["valid"]:
+            step = task_to_actionwithleasttrainvids[task]
+            try:
+                task_splits = persplit_task_to_step_to_remainingvids["valid"][task][step]
+            except:
+                import pdb; pdb.set_trace()
+            task_splits["task"] = task_num_to_desc[task]
+            task_splits["step"] = step
+            line = json.dumps(task_splits)
+            wf.write(line+"\n")
+
     with open(hardsplit_train_step_videos_fn, "w") as wf:
         for task in split_to_task_to_vids["train"]:
             for video in split_to_task_to_vids["train"][task]:
-                if video in split_to_task_to_steps_to_vids["train"][task][task_to_actionwithleasttrainvids[task]]:
-                    continue
-                line = f"{task},{video},https://www.youtube.com/watch?v={video}"
-                wf.write(line+"\n")
+                if video in persplit_task_to_step_to_remainingvids["train"][task][task_to_actionwithleasttrainvids[task]]["no_action"]:
+                    # include videos without action
+                    line = f"{task},{video},https://www.youtube.com/watch?v={video}"
+                    wf.write(line+"\n")
     # for task in empirical_val_transition_probs:
     #     empirical_val_transition_probs[task] = empirical_val_transition_probs[task] / empirical_val_transition_probs[task].sum(0)
     #     empirical_val_init_probs[task] = empirical_val_init_probs[task] / empirical_val_init_probs[task].sum(0)
@@ -162,6 +184,8 @@ def make_heldout_transition_train_splits(videos_fn):
                 task_to_transitionwithmostvalidvids[task] = trans
             elif len(persplit_task_to_transition_to_remainingvids["train"][task].get(trans, {"no_action": []})["no_action"]) > len(persplit_task_to_transition_to_remainingvids["train"][task].get(task_to_transitionwithmostvalidvids[task], {"no_action": []})["no_action"]) and persplit_task_to_transition_to_percentvidspresent["valid"][task].get(trans, 0) == persplit_task_to_transition_to_percentvidspresent["valid"][task].get(task_to_transitionwithmostvalidvids[task], 0):
                 task_to_transitionwithmostvalidvids[task] = trans
+        # if int(task) == 16815:
+        #     import pdb; pdb.set_trace()
         print(task_num_to_desc[task])
         # print(persplit_task_to_transition_to_percentvidspresent["valid"][task])
         # print(persplit_task_to_transition_to_remainingvids["train"][task])
@@ -188,18 +212,21 @@ def make_heldout_transition_train_splits(videos_fn):
             # line = json.dumps(persplit_task_to_transition_to_remainingvids["valid"][task][trans])
             # wf.write(line+"\n")
 
-    """
+    # """
     with open(hardsplit_train_transition_videos_fn, "w") as wf:
         for task in split_to_task_to_vids["train"]:
             for video in split_to_task_to_vids["train"][task]:
-                if video in split_to_task_to_transition_to_vids["train"][task]["no_action"][task_to_transitionwithmostvalidvids[task]]:
-                    continue
-                line = f"{task},{video},https://www.youtube.com/watch?v={video}"
-                wf.write(line+"\n")
+                if video in persplit_task_to_transition_to_remainingvids["train"][task][task_to_transitionwithmostvalidvids[task]]["no_action"]:
+                    # include videos without transition
+                    line = f"{task},{video},https://www.youtube.com/watch?v={video}"
+                    wf.write(line+"\n")
+                # else:
+                #     print(video)
     # """
 
 
 # split_to_task_to_vids = make_heldout_step_train_splits(all_videos_fn)
 # print("\n")
 make_heldout_transition_train_splits(all_videos_fn)
+make_heldout_step_train_splits(all_videos_fn)
 # get_split_info(val_videos_fn)

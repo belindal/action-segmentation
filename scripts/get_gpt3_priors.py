@@ -13,16 +13,16 @@ import time
 from scipy.special import kl_div
 import argparse
 import seaborn as sns
-from scripts.gpt3_utils import load_gpt3_cache, save_gpt3_result, gpt3_score_prompt, global_gpt3_input_demos, bigram_gpt3_input_demos
+from scripts.gpt3_utils import load_gpt3_cache, save_gpt3_result, gpt3_score_prompt, global_gpt3_input_demos, bigram_gpt3_input_demos, bigram_gpt3_input_demos_plausimplaus
 
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--model_type", type=str, choices=["text", "code", "random"], default="text", help="which GPT3 model to use")
-parser.add_argument("--hmm_model_fn", type=str, default="expts/crosstask_i3d-resnet-audio/pca_semimarkov_sup_heldout_transition_lmpriors", help="which HMM model to use")
+parser.add_argument("--hmm_model_fn", type=str, default="expts/crosstask_i3d-resnet-audio/pca_semimarkov_sup_heldout_transition", help="which HMM model to use")
 args = parser.parse_args()
 
 model_type = args.model_type
-engine = f"{model_type}-davinci-002"
+engine = f"{model_type}-davinci-003"
 gpt3_file = f"gpt3/cache_{engine}.jsonl"
 cache = load_gpt3_cache(gpt3_file)
 
@@ -68,7 +68,13 @@ if os.path.exists(lm_bigram_transition_probs_fn):
 if os.path.exists(lm_global_transition_probs_fn):
     lm_global_transition_probs = np.load(lm_global_transition_probs_fn, allow_pickle=True).item()
 
-
+# TODO integrate
+lm_smoothed_bigramprobs = {"transition": {}, "init": {}}
+with open(f"{args.hmm_model_fn}_gpt3_priors_10/train_init_transition_probs.jsonl") as f:
+    for line in f:
+        line = json.loads(line)
+        lm_smoothed_bigramprobs["transition"][line["task_num"]] = np.exp(np.array(line["transition_probs"]))
+        lm_smoothed_bigramprobs["init"][line["task_num"]] = np.exp(np.array(line["init_probs"]))
 
 with open(f"{args.hmm_model_fn}/train_init_transition_probs.jsonl") as f:
     all_lines = f.readlines()
@@ -94,30 +100,53 @@ with open(f"{args.hmm_model_fn}/train_init_transition_probs.jsonl") as f:
 
         # if not os.path.exists(lm_bigram_transition_probs_fn):
         non_bkg_actions_prompt = sorted(non_bkg_actions)
-        # if task == "Add Oil to Your Car":
         gpt3_scores, _ = gpt3_score_prompt(
             engine=engine,
             # input_prefix=f"{gpt3_input_demos}Your task is to {task.lower()}. Your actions are: {', '.join(non_bkg_actions_prompt)}.\n\nThe first step is ",
-            input_prefix=f"{bigram_gpt3_input_demos}Your task is to {task.lower()}. Your set of actions is: {{{', '.join(non_bkg_actions_prompt)}}}. These actions may be out of order and your job is to order them.\nThe first step is ",
+            # input_prefix=f"{bigram_gpt3_input_demos}Your task is to {task.lower()}. Your set of actions is: {{{', '.join(non_bkg_actions_prompt)}}}. These actions may be out of order and your job is to order them.\nThe first step is ",
+            input_prefix=f"{bigram_gpt3_input_demos}Your task is to {task.lower()}. Here is an *unordered* set of possible actions: {{{', '.join(non_bkg_actions_prompt)}}}. Please order these actions for your task.\nThe first step is ",
             classes=non_bkg_actions,
             cache=cache,
             gpt3_file=gpt3_file,
         )
+        # gpt3_scores = []
+        # for action in non_bkg_actions:
+        #     plaus_scores, _ = gpt3_score_prompt(
+        #         engine=engine,
+        #         input_prefix=f"{bigram_gpt3_input_demos_plausimplaus}Your task is to {task.lower()}. Your actions are: {', '.join(non_bkg_actions_prompt)}\nThe first step is {action}: ",
+        #         classes=["plausible", "implausible"],
+        #         cache=cache,
+        #         gpt3_file=gpt3_file,
+        #     )
+        #     plaus_scores = F.softmax(torch.tensor(plaus_scores), dim=0)
+        #     gpt3_scores.append(plaus_scores[0].log())
         lm_init_probs[line["task_num"]] = F.softmax(torch.tensor(gpt3_scores), dim=0)
         lm_bigram_transition_probs[line["task_num"]] = []
         for action in tqdm(non_bkg_actions, desc="bigram"):
-            # for next_action in non_bkg_actions:
             gpt3_scores, _ = gpt3_score_prompt(
                 engine=engine,
-                input_prefix=f"{bigram_gpt3_input_demos}Your task is to {task.lower()}. Your set of actions is: {{{', '.join(non_bkg_actions_prompt)}}}. These actions may be out of order and your job is to order them.\nThe step after {action} is ",
+                input_prefix=f"{bigram_gpt3_input_demos}Your task is to {task.lower()}. Here is an *unordered* set of possible actions: {{{', '.join(non_bkg_actions_prompt)}}}. Please order these actions for your task.\nThe step after {action} is ",
                 classes=non_bkg_actions,
                 cache=cache,
                 gpt3_file=gpt3_file,
             )
+            # gpt3_scores = []
+            # for action2 in non_bkg_actions:
+            #     plaus_scores, _ = gpt3_score_prompt(
+            #         engine=engine,
+            #         input_prefix=f"{bigram_gpt3_input_demos_plausimplaus}Your task is to {task.lower()}. Your actions are: {', '.join(non_bkg_actions_prompt)}\nThe step after {action} is {action2}: ",
+            #         classes=["plausible", "implausible"],
+            #         cache=cache,
+            #         gpt3_file=gpt3_file,
+            #     )
+            #     plaus_scores = F.softmax(torch.tensor(plaus_scores), dim=0)
+            #     gpt3_scores.append(plaus_scores[0].log())
             lm_bigram_transition_probs[line["task_num"]].append(F.softmax(torch.tensor(gpt3_scores), dim=0))
+        # [second_action (which row), first_action (which column)]
         lm_bigram_transition_probs[line["task_num"]] = torch.stack(lm_bigram_transition_probs[line["task_num"]], dim=-1)
 
         # global probs
+        """
         lm_global_transition_probs[line["task_num"]] = []
         curr_prompt = f"{global_gpt3_input_demos}Your task is to {task.lower()}. Your set of actions is: {{{', '.join(non_bkg_actions_prompt)}}}\nThe correct ordering is: "
         for action_idx, action in enumerate(tqdm(non_bkg_actions, desc="global")):
@@ -141,8 +170,10 @@ with open(f"{args.hmm_model_fn}/train_init_transition_probs.jsonl") as f:
                 curr_prompt += ", "
         # set last action
         lm_global_transition_probs[line["task_num"]].append(torch.zeros(len(non_bkg_actions)))
+        # [second_action (which row), first_action (which column)]
         lm_global_transition_probs[line["task_num"]] = torch.stack(lm_global_transition_probs[line["task_num"]], dim=-1)
         # import pdb; pdb.set_trace()
+        """
 
 val_videos_fn = "data/crosstask/crosstask_release/videos_val.csv"
 with open(val_videos_fn) as f:
@@ -188,6 +219,8 @@ def graph_probs(task_transition_probs, task_init_probs, task_labels):
             # import pdb; pdb.set_trace()
             # visualize and save
             differences = np.transpose(task_transition_probs[type][task])
+            # if int(task) == 44789 and type == "lm_bigram":
+            #     import pdb; pdb.set_trace()
             # differences = np.absolute(task_transition_probs[type][task] - np.transpose(task_transition_probs[type][task]))
             ax[t//2,t%2] = sns.heatmap(differences, ax=ax[t//2,t%2]) #, annot=True, fmt="d")
             ax[t//2,t%2].set_title(type)
@@ -294,7 +327,7 @@ def merge_probs(probs_dict, task_num_to_step_model_order):
 
 # empirical_val_transition_probs["init"] = empirical_val_init_probs
 # lm_bigram_transition_probs["init"] = lm_init_probs
-task_transition_probs = {"train": empirical_transition_probs, "val": empirical_val_transition_probs, "lm_bigram": lm_bigram_transition_probs, "lm_global": lm_global_transition_probs}
-task_init_probs = {"train": empirical_init_probs, "val": empirical_val_init_probs, "lm_bigram": lm_init_probs, "lm_global": lm_global_init_probs}
+task_transition_probs = {"train": empirical_transition_probs, "val": empirical_val_transition_probs, "lm_bigram": lm_bigram_transition_probs, "lm_bigram_smoothed": lm_smoothed_bigramprobs["transition"]}
+task_init_probs = {"train": empirical_init_probs, "val": empirical_val_init_probs, "lm_bigram": lm_init_probs, "lm_bigram_smoothed": lm_smoothed_bigramprobs["init"]}
 get_kl_divs(task_transition_probs, task_init_probs, [("val", "train"), ("val", "lm_bigram")])
 graph_probs(task_transition_probs, task_init_probs, task_num_to_step_model_order)

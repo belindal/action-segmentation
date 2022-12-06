@@ -439,16 +439,28 @@ class Accuracy(object):
                 if label not in background_remapped_labels:
                     predicted_label_types_non_bg += 1
 
+            print(f"VIDEO {num_videos}")
+            print(np.unique(gt_labels_remapped))
+            has_pred = []
             for label in np.unique(gt_labels_remapped):
                 step_total += 1
                 if label not in background_remapped_labels:
                     non_background_step_total += 1
                 pred_indices = (pred_labels == label).nonzero()[0]
+                has_pred.append(len(pred_indices) > 0)
                 if len(pred_indices) == 0:
                     continue
+                
                 pred_index = np.random.choice(pred_indices)
+                # try:
+                #     assert gt_labels_remapped[pred_index] == label
+                # except:
+                #     import pdb; pdb.set_trace()
                 # center_index = pred_indices[len(pred_indices) // 2]
                 center_index = min(pred_indices, key=lambda x:abs(x-(pred_indices[0]+pred_indices[-1])/2))
+                # expected_index #???
+                # for pred_index in pred_indices:
+                # gt label at random timestep of current pred label matches predicted timestep
                 if gt_labels_remapped[pred_index] == label:
                     step_match += 1
                     if label not in background_remapped_labels:
@@ -457,6 +469,8 @@ class Accuracy(object):
                     center_step_match += 1
                     if label not in background_remapped_labels:
                         non_background_center_step_match += 1
+            print(has_pred)
+        # import pdb; pdb.set_trace()
         results = ({
             'single_step_recall': np.array([step_match, step_total]),
             'step_recall_non_bg': np.array([non_background_step_match, non_background_step_total]),

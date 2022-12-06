@@ -167,7 +167,6 @@ class SemiMarkovModule(nn.Module):
         assert all(k.startswith("feature_projector") for k in incompatible_keys.missing_keys), incompatible_keys.missing_Keys
 
     def init_parameters_from_dict(self, params_dict):
-        import pdb; pdb.set_trace()
         return self.load_state_dict(params_dict, strict=False)
 
     def init_projector(self):
@@ -269,7 +268,8 @@ class SemiMarkovModule(nn.Module):
             stats = stats_merged
 
         if self.args.use_lm_smoothing:
-            init_smoothing_factor = saved_probs["init"][self.args.use_lm_smoothing][task].numpy() * len(task_indices) * self.args.sm_supervised_state_smoothing
+            #  * len(task_indices)
+            init_smoothing_factor = np.array(saved_probs["init"][self.args.use_lm_smoothing][task]) * self.args.sm_supervised_state_smoothing * len(task_indices)
         else:
             # import pdb; pdb.set_trace()
             init_smoothing_factor = np.array([self.args.sm_supervised_state_smoothing for _ in task_indices])
@@ -280,8 +280,9 @@ class SemiMarkovModule(nn.Module):
         init_probs[~action_mask] = 0.0
         # (stats['span_start_counts'][~action_mask] + self.args.sm_supervised_state_smoothing) / float(stats['instance_count'] + self.args.sm_supervised_state_smoothing * self.n_classes)
         # otherwise set according to LM priors
+        #  * len(task_indices)
         init_probs[action_mask] = (stats['span_start_counts'][action_mask] + init_smoothing_factor) / float(
-            stats['instance_count'] + self.args.sm_supervised_state_smoothing * len(task_indices))
+            stats['instance_count'] + self.args.sm_supervised_state_smoothing)
         init_probs_old = (stats['span_start_counts'] + self.args.sm_supervised_state_smoothing) / float(
             stats['instance_count'] + self.args.sm_supervised_state_smoothing * len(task_indices))
         init_probs[~action_mask] = init_probs_old[~action_mask]
@@ -294,7 +295,10 @@ class SemiMarkovModule(nn.Module):
         self.init_logits.data.add_(torch.from_numpy(init_probs).to(device=self.init_logits.device).log())
 
         if self.args.use_lm_smoothing:
-            trans_smoothing_factor = saved_probs["transition"][self.args.use_lm_smoothing][task].numpy() * len(task_indices) * self.args.sm_supervised_state_smoothing
+            # if task in [91515, 113766, 16815, 109972, 105222, 95603]:
+            #     import pdb; pdb.set_trace()
+            # len(task_indices) *
+            trans_smoothing_factor = np.array(saved_probs["transition"][self.args.use_lm_smoothing][task]) * self.args.sm_supervised_state_smoothing * len(task_indices)
         else:
             trans_smoothing_factor = np.array([[self.args.sm_supervised_state_smoothing for _ in task_indices] for _ in task_indices])
         trans_probs = np.zeros(stats['span_transition_counts'].shape, dtype=np.float32)
@@ -304,16 +308,19 @@ class SemiMarkovModule(nn.Module):
         # otherwise set according to LM priors
         trans_probs[transition_mask] = (stats['span_transition_counts'][transition_mask] + trans_smoothing_factor.flatten())
         # / (stats['span_transition_counts'][transition_mask] + self.args.sm_supervised_state_smoothing * len(task_indices))
+        # sum each column...
         trans_probs /= trans_probs.sum(axis=0)[None, :]
         smoothed_trans_counts = stats['span_transition_counts'] + self.args.sm_supervised_state_smoothing
         trans_probs_old = smoothed_trans_counts / smoothed_trans_counts.sum(axis=0)[None, :]
         trans_probs[~transition_mask] = trans_probs_old[~transition_mask]
+        # import pdb; pdb.set_trace()
 
         trans_probs[np.isnan(trans_probs)] = 0
         # to, from -- so rows should sum to 1
         # assert np.allclose(trans_probs.sum(axis=0), 1.0, rtol=1e-3), (trans_probs.sum(axis=0), trans_probs)
         self.transition_logits.data.zero_()
         self.transition_logits.data.add_(torch.from_numpy(trans_probs).to(device=self.transition_logits.device).log())
+        # import pdb; pdb.set_trace()
 
         # lengths and emissions use merged classes
         mean_lengths = (stats_merged['span_lengths'] + self.args.sm_supervised_length_smoothing) / (
@@ -484,10 +491,14 @@ class SemiMarkovModule(nn.Module):
             # b x d
             this_means = class_means[:, c, :]
             dist = MultivariateNormal(loc=this_means, scale_tril=class_scale_tril[c])
+            # dist = MultivariateNormal(loc=this_means, covariance_matrix=class_covs[0])
+            # dist = MultivariateNormal(loc=this_means[1], scale_tril=class_scale_tril[0]); dist.log_prob(ft)
+            # dist = MultivariateNormal(loc=class_means[1,1], scale_tril=class_scale_tril[1]); dist.log_prob(ft)
             #  features.transpose(0,1): N x b x d
             log_probs.append(
                 dist.log_prob(features.transpose(0, 1)).transpose(0, 1).unsqueeze(-1)  # b x N x 1
             )
+        # import pdb; pdb.set_trace()
         return torch.cat(log_probs, dim=2)
 
     def emission_log_probs(self, features, valid_classes, constraints):

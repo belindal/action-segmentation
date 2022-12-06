@@ -118,12 +118,17 @@ def semimarkov_sufficient_stats(feature_list, label_list, covariance_type, n_cla
 
     X_arr = np.vstack(X_l)
     r_arr = np.vstack(r_l)
-    # import pdb; pdb.set_trace()
     emissions._initialize(X_arr, r_arr)
     if tied_diag:
         cov, prec_chol = get_diagonal_covariances(X_arr)
         emissions.covariances_[:] = np.copy(cov)
         emissions.precisions_cholesky_[:] = np.copy(prec_chol)
+    else:
+        # initialized covariances for heldout?: 
+        # default: uniform 1e-06 across 300(why?) elements
+        unseen_labels = set(range(n_classes)) - set(np.unique(r_arr.nonzero()[1]))
+        for label in unseen_labels:
+            emissions.covariances_[label] = 10
     return emissions, {
         'span_counts': span_counts,
         'span_lengths': span_lengths,
